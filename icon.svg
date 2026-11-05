@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Session file tree">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f6feb"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
+    <path d="M10 32h44"/>
+  </g>
+  <g fill="#ffffff">
+    <rect x="13" y="15" width="9" height="9" rx="2.5"/>
+    <rect x="27" y="27.5" width="9" height="9" rx="2.5"/>
+    <rect x="41" y="15" width="9" height="9" rx="2.5"/>
+  </g>
+  <g fill="#9ecbff">
+    <rect x="13" y="40" width="9" height="9" rx="2.5"/>
+    <rect x="27" y="40" width="9" height="9" rx="2.5" opacity="0.75"/>
+    <rect x="41" y="40" width="9" height="9" rx="2.5" opacity="0.55"/>
+  </g>
+</svg>

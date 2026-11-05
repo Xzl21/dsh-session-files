@@ -1,0 +1,76 @@
+{
+  "name": "dsh-session-files",
+  "version": "0.1.0",
+  "description": "Per-session file provenance tree for DSH: every file a session touched, left-to-right by turn, split into deliverable / process / input / temp lanes, with one-click recoverable cleanup of throwaway scripts.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-plugins",
+    "deepseek-harness",
+    "deepseek",
+    "cordis",
+    "cordis-plugin",
+    "session",
+    "session-files",
+    "file-tree",
+    "artifacts",
+    "workspace",
+    "cleanup",
+    "temp-files",
+    "trash",
+    "agent",
+    "llm",
+    "会话文件树",
+    "文件管理",
+    "临时文件清理"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "license": "MIT",
+  "author": "Xzl21",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xzl21/dsh-session-files.git"
+  },
+  "homepage": "https://github.com/Xzl21/dsh-session-files#readme",
+  "bugs": {
+    "url": "https://github.com/Xzl21/dsh-session-files/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "host/*.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "CONTRACT.md",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "preview/*.png"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

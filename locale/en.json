@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session File Tree",
+    "description": "Every file this session touched, laid out left to right by turn and split into deliverable / process / input / temp lanes, so throwaway scripts can be cleaned up in one click."
+  }
+}

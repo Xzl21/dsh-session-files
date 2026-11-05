@@ -1,0 +1,212 @@
+{
+  "sessionId": "session-11111111-2222-3333-4444-555555555555",
+  "workspacePath": "D:\\005agent\\dsh data",
+  "sessionCreatedAt": 1762390000000,
+  "generatedAt": 1762400123456,
+  "live": true,
+  "source": "live",
+  "counts": { "deliverable": 2, "process": 6, "input": 5, "temp": 7, "files": 20 },
+  "lanes": ["deliverable", "process", "input", "temp"],
+  "columns": [
+    { "id": "input", "kind": "input", "title": "输入", "subtitle": "会话开始前" },
+    { "id": "t1", "kind": "turn", "title": "第 1 轮", "subtitle": "10:20", "turn": 1 },
+    { "id": "t2", "kind": "turn", "title": "第 2 轮", "subtitle": "10:41", "turn": 2 },
+    { "id": "t3", "kind": "turn", "title": "第 3 轮", "subtitle": "11:03", "turn": 3 },
+    { "id": "final", "kind": "final", "title": "交付", "subtitle": "最终产物" }
+  ],
+  "nodes": [
+    {
+      "id": "响应文件-审阅.docx#t2", "path": "响应文件-审阅.docx", "name": "响应文件-审阅.docx",
+      "ext": "docx", "dir": "", "col": 2, "lane": "deliverable", "cls": "deliverable",
+      "autoCls": "deliverable", "reason": "presented", "overridden": false, "note": null,
+      "exists": true, "size": 284331, "mtime": 1762399000000, "birthtime": 1762398000000,
+      "turns": [2], "actions": [
+        { "tool": "read", "action": "read", "turn": 2, "seq": 88, "time": 1762398800000 },
+        { "tool": "write", "action": "write", "turn": 2, "seq": 96, "time": 1762399000000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "响应文件-审阅.docx#t3", "path": "响应文件-审阅.docx", "name": "响应文件-审阅.docx",
+      "ext": "docx", "dir": "", "col": 3, "lane": "deliverable", "cls": "deliverable",
+      "autoCls": "deliverable", "reason": "presented", "overridden": false, "note": null,
+      "exists": true, "size": 291004, "mtime": 1762399900000, "birthtime": 1762398000000,
+      "turns": [3], "actions": [
+        { "tool": "edit", "action": "edit", "turn": 3, "seq": 141, "time": 1762399900000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "响应文件-审阅.docx#final", "path": "响应文件-审阅.docx", "name": "响应文件-审阅.docx",
+      "ext": "docx", "dir": "", "col": 4, "lane": "deliverable", "cls": "deliverable",
+      "autoCls": "deliverable", "reason": "presented", "overridden": false, "note": null,
+      "exists": true, "size": 291004, "mtime": 1762399900000, "birthtime": 1762398000000,
+      "turns": [2, 3], "actions": [
+        { "tool": "present", "action": "present", "turn": 3, "seq": 180, "time": 1762400000000 }
+      ],
+      "sources": ["event"], "kind": "final"
+    },
+    {
+      "id": "reports/final-report.pdf#t3", "path": "reports/final-report.pdf", "name": "final-report.pdf",
+      "ext": "pdf", "dir": "reports", "col": 3, "lane": "deliverable", "cls": "deliverable",
+      "autoCls": "deliverable", "reason": "dir", "overridden": false, "note": "导出的终稿",
+      "exists": true, "size": 1048576, "mtime": 1762399950000, "birthtime": 1762399950000,
+      "turns": [3], "actions": [
+        { "tool": "office_export_pdf", "action": "write", "turn": 3, "seq": 170, "time": 1762399950000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "reports/final-report.pdf#final", "path": "reports/final-report.pdf", "name": "final-report.pdf",
+      "ext": "pdf", "dir": "reports", "col": 4, "lane": "deliverable", "cls": "deliverable",
+      "autoCls": "deliverable", "reason": "dir", "overridden": false, "note": "导出的终稿",
+      "exists": true, "size": 1048576, "mtime": 1762399950000, "birthtime": 1762399950000,
+      "turns": [3], "actions": [],
+      "sources": ["event"], "kind": "final"
+    },
+    {
+      "id": "extract/clause-1.json#t1", "path": "extract/clause-1.json", "name": "clause-1.json",
+      "ext": "json", "dir": "extract", "col": 1, "lane": "process", "cls": "process",
+      "autoCls": "process", "reason": "written", "overridden": false, "note": null,
+      "exists": true, "size": 2048, "mtime": 1762398200000, "birthtime": 1762398200000,
+      "turns": [1], "actions": [
+        { "tool": "write", "action": "write", "turn": 1, "seq": 24, "time": 1762398200000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "extract/clause-2.json#t1", "path": "extract/clause-2.json", "name": "clause-2.json",
+      "ext": "json", "dir": "extract", "col": 1, "lane": "process", "cls": "process",
+      "autoCls": "process", "reason": "written", "overridden": false, "note": null,
+      "exists": true, "size": 1890, "mtime": 1762398250000, "birthtime": 1762398250000,
+      "turns": [1], "actions": [
+        { "tool": "write", "action": "write", "turn": 1, "seq": 31, "time": 1762398250000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "extract/clause-2.json#t3", "path": "extract/clause-2.json", "name": "clause-2.json",
+      "ext": "json", "dir": "extract", "col": 3, "lane": "process", "cls": "process",
+      "autoCls": "process", "reason": "written", "overridden": false, "note": null,
+      "exists": true, "size": 2011, "mtime": 1762399700000, "birthtime": 1762398250000,
+      "turns": [3], "actions": [
+        { "tool": "edit", "action": "edit", "turn": 3, "seq": 133, "time": 1762399700000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "build/report-draft.docx#t2", "path": "build/report-draft.docx", "name": "report-draft.docx",
+      "ext": "docx", "dir": "build", "col": 2, "lane": "process", "cls": "process",
+      "autoCls": "process", "reason": "written", "overridden": false, "note": null,
+      "exists": true, "size": 133220, "mtime": 1762398900000, "birthtime": 1762398900000,
+      "turns": [2], "actions": [
+        { "tool": "office_docx", "action": "write", "turn": 2, "seq": 91, "time": 1762398900000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "build/report-draft.docx#t3", "path": "build/report-draft.docx", "name": "report-draft.docx",
+      "ext": "docx", "dir": "build", "col": 3, "lane": "process", "cls": "process",
+      "autoCls": "process", "reason": "written", "overridden": false, "note": null,
+      "exists": true, "size": 140100, "mtime": 1762399800000, "birthtime": 1762398900000,
+      "turns": [3], "actions": [
+        { "tool": "office_docx", "action": "edit", "turn": 3, "seq": 150, "time": 1762399800000 }
+      ],
+      "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "notes.md#t1", "path": "notes.md", "name": "notes.md", "ext": "md", "dir": "",
+      "col": 1, "lane": "process", "cls": "process", "autoCls": "process", "reason": "written",
+      "overridden": false, "note": null, "exists": true, "size": 812, "mtime": 1762398300000,
+      "birthtime": 1762398300000, "turns": [1], "actions": [
+        { "tool": "write", "action": "write", "turn": 1, "seq": 40, "time": 1762398300000 }
+      ], "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "招标文件.docx#i", "path": "招标文件.docx", "name": "招标文件.docx", "ext": "docx",
+      "dir": "", "col": 0, "lane": "input", "cls": "input", "autoCls": "input",
+      "reason": "readonly-preexisting", "overridden": false, "note": "用户提供的原件",
+      "exists": true, "size": 512000, "mtime": 1762380000000, "birthtime": 1762380000000,
+      "turns": [], "actions": [], "sources": ["scan"], "kind": "input"
+    },
+    {
+      "id": "未分组会话备份/session-abc.md#i", "path": "未分组会话备份/session-abc.md", "name": "session-abc.md",
+      "ext": "md", "dir": "未分组会话备份", "col": 0, "lane": "input", "cls": "input",
+      "autoCls": "input", "reason": "readonly-preexisting", "overridden": false, "note": null,
+      "exists": true, "size": 4096, "mtime": 1762385000000, "birthtime": 1762385000000,
+      "turns": [], "actions": [], "sources": ["scan"], "kind": "input"
+    },
+    {
+      "id": "_tmp_probe.py#t1", "path": "_tmp_probe.py", "name": "_tmp_probe.py", "ext": "py",
+      "dir": "", "col": 1, "lane": "temp", "cls": "temp", "autoCls": "temp",
+      "reason": "temp-name", "overridden": false, "note": null, "exists": true, "size": 1320,
+      "mtime": 1762398400000, "birthtime": 1762398400000, "turns": [1], "actions": [
+        { "tool": "write", "action": "write", "turn": 1, "seq": 55, "time": 1762398400000 },
+        { "tool": "pwsh", "action": "exec", "turn": 1, "seq": 58, "time": 1762398410000 }
+      ], "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "_scan_docx.py#t1", "path": "_scan_docx.py", "name": "_scan_docx.py", "ext": "py",
+      "dir": "", "col": 1, "lane": "temp", "cls": "temp", "autoCls": "temp",
+      "reason": "oneday-script", "overridden": false, "note": null, "exists": true, "size": 2210,
+      "mtime": 1762398450000, "birthtime": 1762398450000, "turns": [1], "actions": [
+        { "tool": "write", "action": "write", "turn": 1, "seq": 61, "time": 1762398450000 },
+        { "tool": "bash", "action": "exec", "turn": 1, "seq": 63, "time": 1762398460000 }
+      ], "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "debug.log#t2", "path": "debug.log", "name": "debug.log", "ext": "log", "dir": "",
+      "col": 2, "lane": "temp", "cls": "temp", "autoCls": "temp", "reason": "temp-ext",
+      "overridden": false, "note": null, "exists": true, "size": 88213, "mtime": 1762399050000,
+      "birthtime": 1762399050000, "turns": [2], "actions": [
+        { "tool": "pwsh", "action": "exec", "turn": 2, "seq": 102, "time": 1762399050000 }
+      ], "sources": ["scan"], "kind": "turn"
+    },
+    {
+      "id": "verify/check1.txt#t2", "path": "verify/check1.txt", "name": "check1.txt", "ext": "txt",
+      "dir": "verify", "col": 2, "lane": "temp", "cls": "temp", "autoCls": "temp",
+      "reason": "temp-dir", "overridden": false, "note": null, "exists": true, "size": 320,
+      "mtime": 1762399100000, "birthtime": 1762399100000, "turns": [2], "actions": [
+        { "tool": "write", "action": "write", "turn": 2, "seq": 110, "time": 1762399100000 }
+      ], "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "verify/check2.txt#t2", "path": "verify/check2.txt", "name": "check2.txt", "ext": "txt",
+      "dir": "verify", "col": 2, "lane": "temp", "cls": "temp", "autoCls": "temp",
+      "reason": "temp-dir", "overridden": true, "note": "留作证据", "exists": true, "size": 512,
+      "mtime": 1762399150000, "birthtime": 1762399150000, "turns": [2], "actions": [
+        { "tool": "write", "action": "write", "turn": 2, "seq": 115, "time": 1762399150000 }
+      ], "sources": ["event", "override"], "kind": "turn"
+    },
+    {
+      "id": "tmp/extract.py#t3", "path": "tmp/extract.py", "name": "extract.py", "ext": "py",
+      "dir": "tmp", "col": 3, "lane": "temp", "cls": "temp", "autoCls": "temp",
+      "reason": "temp-dir", "overridden": false, "note": null, "exists": false, "size": 0,
+      "mtime": 1762399750000, "birthtime": 1762399750000, "turns": [3], "actions": [
+        { "tool": "write", "action": "write", "turn": 3, "seq": 155, "time": 1762399750000 },
+        { "tool": "bash", "action": "delete", "turn": 3, "seq": 160, "time": 1762399760000 }
+      ], "sources": ["event"], "kind": "turn"
+    },
+    {
+      "id": "reports/draft-v1.docx.bak#t3", "path": "reports/draft-v1.docx.bak", "name": "draft-v1.docx.bak",
+      "ext": "bak", "dir": "reports", "col": 3, "lane": "temp", "cls": "temp", "autoCls": "temp",
+      "reason": "temp-ext", "overridden": false, "note": null, "exists": true, "size": 133220,
+      "mtime": 1762399850000, "birthtime": 1762399850000, "turns": [3], "actions": [
+        { "tool": "bash", "action": "exec", "turn": 3, "seq": 165, "time": 1762399850000 }
+      ], "sources": ["scan"], "kind": "turn"
+    }
+  ],
+  "edges": [
+    { "from": "招标文件.docx#i", "to": "extract/clause-1.json#t1", "kind": "derived" },
+    { "from": "extract/clause-1.json#t1", "to": "extract/clause-2.json#t1", "kind": "derived" },
+    { "from": "extract/clause-2.json#t1", "to": "notes.md#t1", "kind": "derived" },
+    { "from": "extract/clause-2.json#t1", "to": "extract/clause-2.json#t3", "kind": "evolution" },
+    { "from": "build/report-draft.docx#t2", "to": "build/report-draft.docx#t3", "kind": "evolution" },
+    { "from": "响应文件-审阅.docx#t2", "to": "响应文件-审阅.docx#t3", "kind": "evolution" },
+    { "from": "响应文件-审阅.docx#t3", "to": "响应文件-审阅.docx#final", "kind": "deliverable" },
+    { "from": "reports/final-report.pdf#t3", "to": "reports/final-report.pdf#final", "kind": "deliverable" },
+    { "from": "build/report-draft.docx#t3", "to": "reports/final-report.pdf#t3", "kind": "derived" },
+    { "from": "build/report-draft.docx#t3", "to": "响应文件-审阅.docx#t3", "kind": "derived" }
+  ],
+  "warnings": []
+}

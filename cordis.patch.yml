@@ -1,0 +1,3 @@
+- insert:
+    - id: session-files
+      name: dsh-session-files

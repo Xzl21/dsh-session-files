@@ -1,0 +1,12 @@
+node_modules/
+.scratch/
+.lead/
+.tmp/
+*.log
+*.tmp
+tmp/
+dist/
+.DS_Store
+Thumbs.db
+preview/layout-*.json
+plugins/*/node_modules/
