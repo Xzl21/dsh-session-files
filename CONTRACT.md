@@ -133,13 +133,24 @@ export function buildTree({ fileOps, scanFiles, sessionCreatedAt, overrides, lim
 
 1. **present 过** → `deliverable`
 2. 路径命中交付目录名（`deliverables|deliverable|release|final|输出|交付`，整段匹配）→ `deliverable`
-3. 命中临时模式 → `temp`：
-   - basename 以 `_`、`~`、`.` 开头，或以 `.tmp/.bak/.old/.orig/.swp/.log` 结尾
-   - basename 含 `tmp|temp|scratch|probe|debug|draft|snapshot|dump|intermediate`（词边界或 `_`/`-`/`.` 分隔）
-   - 位于 `.tmp*` / `tmp` / `temp` / `scratch` / `cache` / **`verify`** 目录下
-   - **一次性脚本**：`basename ∈ 正则 '^(tmp|temp|probe|debug|scratch|test|check|scan|inspect)[-_]'`
-     或扩展名为 `.py/.ps1/.sh/.mjs/.js/.bat/.cmd` 且路径只在**一个** turn 里被写过、且没被任何
-     「过程/交付」文件引用（引用 = 别的工具的 args 里出现过该路径字符串）
+3. 命中临时模式 → `temp`，分两层（**v0.1.1 起的防误删分层**）：
+   - **显式规则（任何文件都生效）**：
+     - basename 以 `_`、`~` 开头，或以 `.tmp/.bak/.old/.orig/.swp/.log` 结尾
+     - temp 点文件（`.tmp*`、`.bak`、`.swp`、`.lock`、`._*`、`.DS_Store` …）与 `thumbs.db`/`desktop.ini`
+     - **一次性脚本**：`basename ∈ 正则 '^(tmp|temp|probe|debug|scratch|test|check|scan|inspect)[-_]'`
+   - **启发式规则（仅当 `touched` 且不在项目目录内才生效，避免误删项目文件）**：
+     - basename 含 `tmp|temp|scratch|probe|debug|draft|snapshot|dump|intermediate`（词边界或 `_`/`-`/`.` 分隔）
+     - **一次性脚本**：扩展名为 `.py/.ps1/.sh/.mjs/.js/.bat/.cmd` 且路径只在**一个** turn 里被写过、
+       且没被任何「过程/交付」文件引用（引用 = 别的工具的 args 里出现过该路径字符串）
+     - `touched` = 本 session 写过 / present 过 / 至少出现在一个 turn 里（只被扫描、本会话从未碰过的文件
+       不会被名字启发式判成垃圾）
+     - **项目目录内**（任一层祖父目录含 `package.json`/`pyproject.toml`/`Cargo.toml`/`go.mod` 等 manifest；
+       工作区根目录的 manifest 不算）一律不走启发式：仓库自己的 `tools/*.mjs`、`.gitignore`、`.gitattributes`
+       永远不会被「一键清理」删掉
+   - 目录规则（任何文件都生效）：位于 `.tmp*` / `tmp` / `temp` / `scratch` / `cache` / **`verify`** 目录下
+   > 为什么分层：v0.1.0 用「basename 含 dump/以 `.` 开头」一刀切，导致用户在多会话点清理时，
+   > `plugins/dsh-session-files/.gitignore`、`.gitattributes`、`tools/layout-dump.mjs` 被移进回收站
+   > （见 CHANGELOG 0.1.1）。分层后**配置与项目工具默认安全**，用户仍可手动分类覆盖。
    > 已知限制（A 已确认）：`referencedBy` 只能在同一**次**工具调用内判定
    > （`python helper.py > out.json` 同一行可判）；「先 write 脚本、另一次调用单独执行它」这种跨调用引用
    > 感知不到，会把一次性脚本仍判成 `temp`——v1 接受。
@@ -150,7 +161,8 @@ export function buildTree({ fileOps, scanFiles, sessionCreatedAt, overrides, lim
 `info` 形状（classifyPath 第二参，允许缺省字段）：
 ```js
 { written: boolean, presented: boolean, readOnly: boolean, touchedTurns: number[],
-  birthtime?: number, mtime?: number, sessionCreatedAt?: number, referencedBy?: string[] }
+  birthtime?: number, mtime?: number, sessionCreatedAt?: number, referencedBy?: string[],
+  projectDir?: boolean }
 ```
 
 可解释性：每个节点的 `reason` 是**短英文 key**（`presented`/`dir`/`temp-name`/`temp-ext`/`temp-dir`/

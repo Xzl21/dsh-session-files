@@ -24,6 +24,25 @@ git push origin v0.1.0
 
 仓库必须是**公开**的：目录 CI 要匿名读 `package.json`。
 
+### 1.1 推不上去时：走 REST API 直推（本机就是这种情况）
+
+本机 `github.com:443`（git smart HTTP）会被重置，但 `api.github.com` 可达，所以提供两条脚本：
+
+```powershell
+# 只推「当前 HEAD 的树」作为远端 main 上的一个新提交；远端已一致时不做事
+node tools/publish.mjs Xzl21/dsh-session-files
+
+# 需要带 tag 时
+node tools/publish.mjs Xzl21/dsh-session-files --tag v0.1.1
+
+# 先看要做什么
+node tools/publish.mjs Xzl21/dsh-session-files --dry-run
+```
+
+- token 来源顺序：`--token` → `$env:GH_TOKEN` → `$env:GH_OAUTH_TOKEN` → `%DSH_HOME%/.dsh-gitdeck/auth.json`（dsh-gitdeck 连接后自动写入，0600）。
+- 首次建仓用 `tools/publish-history.mjs`（逐条重放本地历史，能复现相同 tree；commit SHA 因平台序列化差异可能不同）。
+- 直推脚本产生的提交与服务端的对象一致，之后在任何能联网 `git push` 的机器上先 `git fetch origin && git reset --hard origin/main` 即可对齐本地。
+
 ## 2. 本地自测（确认别人装得上）
 
 ```text

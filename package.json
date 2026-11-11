@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-files",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Per-session file provenance tree for DSH: every file a session touched, left-to-right by turn, split into deliverable / process / input / temp lanes, with one-click recoverable cleanup of throwaway scripts.",
   "keywords": [
     "dsh",
@@ -61,7 +61,12 @@
     "CHANGELOG.md",
     "screenshots.json",
     "assets/*.png",
-    "preview/*.png"
+    "preview/*.png",
+    "docs/*.md",
+    "tools/*.mjs",
+    "tools/*.py",
+    "test/*.mjs",
+    "test/*.json"
   ],
   "dsh": {
     "bundle": {

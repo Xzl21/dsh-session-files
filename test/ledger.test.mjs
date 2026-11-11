@@ -920,6 +920,49 @@ test('SKIP_DIR_PATTERNS/shouldSkipDir: prefix rules for real workspaces', () => 
   }
 });
 
+test('classify: repo plumbing is never a throwaway', () => {
+  // dotfiles used to hit the "starts with ." rule and get deleted by one-click cleanup
+  for (const rel of ['.gitignore', '.gitattributes', '.editorconfig', 'package.json', 'LICENSE']) {
+    const r = classifyPath(rel, { written: true, touchedTurns: [1] });
+    assert.notStrictEqual(r.autoCls, 'temp', rel + ' must not be temp (' + r.reason + ')');
+  }
+  // untouched project tooling must survive: name heuristics only run on touched files
+  assert.deepStrictEqual(classifyPath('tools/layout-dump.mjs', { written: false, touchedTurns: [] }), {
+    autoCls: 'process',
+    reason: 'scanned-new',
+  });
+  const writeOnce = classifyPath('tools/layout-dump.mjs', { written: true, touchedTurns: [1], referencedBy: [] });
+  assert.strictEqual(writeOnce.autoCls, 'temp');
+  // ...but a touched file inside a project stays a project source
+  assert.deepStrictEqual(
+    classifyPath('tools/layout-dump.mjs', { written: true, touchedTurns: [1], referencedBy: [], projectDir: true }),
+    { autoCls: 'process', reason: 'written' },
+  );
+  // explicitly temp-looking names stay temp even inside a project
+  assert.deepStrictEqual(classifyPath('.DS_Store', { written: true, touchedTurns: [1] }), {
+    autoCls: 'temp',
+    reason: 'temp-name',
+  });
+  assert.strictEqual(classifyPath('_tmp_probe.py', { written: true, touchedTurns: [1] }).autoCls, 'temp');
+});
+
+test('buildTree: untouched tooling is scanned-new, touched probes stay temp', () => {
+  const scanFiles = [
+    { relPath: 'package.json', size: 100, mtime: 60000, birthtime: 60000 },
+    // existed before the session: lands in the input column, never auto-trashed
+    { relPath: 'tools/layout-dump.mjs', size: 100, mtime: 60000, birthtime: 40000 },
+    { relPath: 'loose/probe.mjs', size: 100, mtime: 60000, birthtime: 60000 },
+  ];
+  const fileOps = [
+    { path: 'loose/probe.mjs', action: 'write', tool: 'write', turn: 1, seq: 12, time: 61000 },
+  ];
+  const result = buildTree({ fileOps, scanFiles, sessionCreatedAt: CREATED, overrides: {}, turnTimes: new Map([[1, 61000]]) });
+  const byPath = new Map(result.nodes.map((node) => [node.path, node]));
+  assert.strictEqual(byPath.get('tools/layout-dump.mjs').lane, 'input');
+  assert.strictEqual(byPath.get('tools/layout-dump.mjs').cls, 'input');
+  assert.strictEqual(byPath.get('loose/probe.mjs').cls, 'temp');
+});
+
 // ==================================================================== summary
 
 console.log('');

@@ -27,6 +27,69 @@ const TEMP_SUFFIX_RE = /\.(tmp|bak|old|orig|swp|log)$/;
 const TEMP_WORD_RE = /(^|[^a-z0-9])(tmp|temp|scratch|probe|debug|draft|snapshot|dump|intermediate)(?=$|[^a-z0-9])/;
 const THROWAWAY_NAME_RE = /^(tmp|temp|probe|debug|scratch|test|check|scan|inspect)[-_]/;
 
+// Project plumbing that is never a throwaway, even though it is small, single-turn
+// and unreferenced. Without this list a one-click cleanup deletes `.gitignore`
+// (dot-prefixed => temp-name) and freshly written build scripts in a real repo.
+const CONFIG_BASENAMES = new Set([
+  '.gitignore',
+  '.gitattributes',
+  '.gitmodules',
+  '.editorconfig',
+  '.npmrc',
+  '.npmignore',
+  '.dockerignore',
+  '.mailmap',
+  '.nvmrc',
+  '.node-version',
+  '.python-version',
+  '.tool-versions',
+  '.gitkeep',
+  '.keep',
+  '.prettierrc',
+  '.eslintrc',
+  '.stylelintrc',
+  '.babelrc',
+  'tsconfig.json',
+  'jsconfig.json',
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'yarn.lock',
+  'pyproject.toml',
+  'requirements.txt',
+  'setup.py',
+  'setup.cfg',
+  'tox.ini',
+  'cargo.toml',
+  'go.mod',
+  'go.sum',
+  'gemfile',
+  'composer.json',
+  'makefile',
+  'cmakelists.txt',
+  'dockerfile',
+  'license',
+  'notice',
+]);
+// Dot-prefixed names that ARE disposable (editor/OS/tmp leftovers).
+const TEMP_DOTFILE_RE = /^\.(tmp|temp|bak|old|orig|swp|swo|lock|_|ds_store|trash|nfs)/i;
+const TEMP_BASENAMES = new Set(['.ds_store', 'thumbs.db', 'desktop.ini']);
+const MANIFEST_BASENAMES = new Set([
+  'package.json',
+  'pnpm-workspace.yaml',
+  'pyproject.toml',
+  'setup.py',
+  'cargo.toml',
+  'go.mod',
+  'composer.json',
+  'gemfile',
+  'pom.xml',
+  'build.gradle',
+  'makefile',
+  'cmakelists.txt',
+]);
+
 const MAX_INPUT_NODES = 40;
 const MAX_DERIVED_IN = 3;
 const MAX_DERIVED_EDGES = 300;
@@ -743,17 +806,34 @@ export function classifyPath(relPath, info) {
   if (presented) return { autoCls: 'deliverable', reason: 'presented' };
   // 2. path inside a deliverable directory segment
   if (dirs.some((d) => DELIVERABLE_DIRS.has(d))) return { autoCls: 'deliverable', reason: 'dir' };
-  // 3. temp patterns
-  if (THROWAWAY_NAME_RE.test(base)) return { autoCls: 'temp', reason: 'oneday-script' };
-  if (TEMP_SUFFIX_RE.test(base)) return { autoCls: 'temp', reason: 'temp-ext' };
-  if (base.startsWith('_') || base.startsWith('~') || base.startsWith('.')) {
-    return { autoCls: 'temp', reason: 'temp-name' };
-  }
-  if (TEMP_WORD_RE.test(base)) return { autoCls: 'temp', reason: 'temp-name' };
-  if (dirs.some(isTempDirSeg)) return { autoCls: 'temp', reason: 'temp-dir' };
-  // one-shot script: written, only in one turn, referenced by no other artifact
-  if (isScriptExtPath(base) && written && turns.length <= 1 && refs.length === 0) {
-    return { autoCls: 'temp', reason: 'oneday-script' };
+  // 3. temp patterns — project plumbing (dotfiles, manifests, tooling files) is exempt
+  const configFile = CONFIG_BASENAMES.has(base) || (base.startsWith('.') && !TEMP_DOTFILE_RE.test(base));
+  if (!configFile) {
+    const explicitTemp =
+      THROWAWAY_NAME_RE.test(base) ||
+      TEMP_SUFFIX_RE.test(base) ||
+      base.startsWith('_') ||
+      base.startsWith('~') ||
+      TEMP_DOTFILE_RE.test(base) ||
+      TEMP_BASENAMES.has(base);
+    if (explicitTemp) {
+      if (THROWAWAY_NAME_RE.test(base)) return { autoCls: 'temp', reason: 'oneday-script' };
+      if (TEMP_SUFFIX_RE.test(base)) return { autoCls: 'temp', reason: 'temp-ext' };
+      return { autoCls: 'temp', reason: 'temp-name' };
+    }
+    if (dirs.some(isTempDirSeg)) return { autoCls: 'temp', reason: 'temp-dir' };
+    // Below this line the rules are heuristics on top of "did the session touch it?"
+    // and "is this file part of a project?" — applying them blindly deletes project
+    // tooling (`tools/layout-dump.mjs` matched the word rule "dump" and was trashed).
+    const touched = written || presented || turns.length > 0;
+    const projectDir = data.projectDir === true;
+    if (touched && !projectDir) {
+      if (TEMP_WORD_RE.test(base)) return { autoCls: 'temp', reason: 'temp-name' };
+      // one-shot script: written, only in one turn, referenced by no other artifact
+      if (isScriptExtPath(base) && written && turns.length <= 1 && refs.length === 0) {
+        return { autoCls: 'temp', reason: 'oneday-script' };
+      }
+    }
   }
   // 4. read-only, never written, and older than the session
   if (readOnly && preexisting) return { autoCls: 'input', reason: 'readonly-preexisting' };
@@ -848,6 +928,31 @@ export function buildTree(input) {
   const turnTimes = normalizeTurnTimes(opts.turnTimes);
   const scanTotal =
     isNum(opts.scanTotal) && opts.scanTotal >= 0 ? Math.floor(opts.scanTotal) : null;
+
+  // Directories holding a project manifest: heuristics never fire underneath them,
+  // so a repo's own dotfiles and tool scripts survive "clean up temp files".
+  const manifestDirs = new Set();
+  for (const raw of rawScan) {
+    const rel = raw && typeof raw.relPath === 'string' ? cleanRel(toPosix(raw.relPath)) : null;
+    if (!rel) continue;
+    const slash = rel.lastIndexOf('/');
+    const base = (slash === -1 ? rel : rel.slice(slash + 1)).toLowerCase();
+    if (!MANIFEST_BASENAMES.has(base)) continue;
+    manifestDirs.add(slash === -1 ? '' : rel.slice(0, slash).toLowerCase());
+  }
+  const inProjectDir = (rel) => {
+    // Only sub-directory manifests count: a root manifest would blanket the whole
+    // workspace and make every probe script look like project code.
+    if (manifestDirs.size === 0) return false;
+    const lower = rel.toLowerCase();
+    let dir = lower;
+    for (;;) {
+      const slash = dir.lastIndexOf('/');
+      if (slash === -1) return false;
+      dir = dir.slice(0, slash);
+      if (dir !== '' && manifestDirs.has(dir)) return true;
+    }
+  };
 
   const warnings = [];
   const warn = (key) => {
@@ -983,6 +1088,7 @@ export function buildTree(input) {
       mtime: entry.scan ? entry.scan.mtime : null,
       sessionCreatedAt,
       referencedBy: refs,
+      projectDir: inProjectDir(entry.path),
     };
     const auto = classifyPath(entry.path, info);
     const override = overrides.get(entry.key);
