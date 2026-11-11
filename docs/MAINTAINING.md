@@ -75,10 +75,29 @@ plugin_manager action=install_bundle target=D:\...\dsh-session-files
 4. `CHANGELOG.md` 增加条目。
 5. `package.json` 的 `version` 升位（语义化版本）：修 bug → patch，新交互/字段 → minor，破坏契约 → major。
 6. `README.md` / `README.en.md` 的功能列表同步。
-7. `git commit && git tag vX.Y.Z && git push --tags`。
-8. （可选）`npm publish` —— 需要先移除 `"private": true`。
+7. 本地 `git commit` + `git tag vX.Y.Z`，推送二选一：
+   - `git push origin main --tags`（有网环境）
+   - `node tools/publish.mjs Xzl21/dsh-session-files --tag vX.Y.Z`（本机 `github.com` 的 TLS 被重置，但 `api.github.com` 可达；token 自动取 gitdeck 的连接记录）
+8. （可选）`npm publish` —— 需要先移除 `"private": true`，且包名已被占用，只能发 `@xzl21/...`。
 
 ## 7. 版本策略
 
 - 插件跟随 DSH 的 host API；若 `@deepseek-ai/dsh-tools` 改变 tool body 返回值约定，改 `index.js` 的 `createToolExecute` 并补集成测试。
 - 会话日志格式升级（`session.v5.jsonl.zstd` 之类）时，`host/logreader.mjs` 需要同时支持新旧格式，并在 `warnings` 里标注降级。
+
+## 8. 对话式维护（最快路径）
+
+在 DSH 任意会话里用自然语言交接即可，agent 会按本文件的检查单执行：
+
+| 你说 | agent 会做 |
+| --- | --- |
+| 「把临时文件清理改成移动前先弹预览」 | 改 `index.js`/`client.js` → 跑三套测试 → 更新 `CONTRACT.md`/`CHANGELOG.md` → `version` 升 patch |
+| 「发版，推到 GitHub」 | 本地 commit + tag → `node tools/publish.mjs ... --tag vX.Y.Z` → 用 REST 建 Release |
+| 「只改别推」 | 停在本地 commit，不碰远端 |
+| 「先给我看差异」 | 输出 `git diff` 摘要，不改代码 |
+
+三条边界，交接时要记住：
+
+1. **host 半（`index.js`、`host/*.mjs`）改完要重启 DSH** 才生效（进程把 ESM 缓存住了，禁用/重启用插件也不行）；client 半（`client.js`）走 HMR，刷新页面即可。
+2. **视觉无法自验**：没有浏览器控制，布局只能靠 `tools/layout-dump.mjs` + `tools/render-tree.py` 出离线 PNG，真实观感需要你截图/描述反馈。
+3. **推送依赖 gitdeck 的授权**：`%DSH_HOME%/.dsh-gitdeck/auth.json` 存在且 token 未撤销时才能直推；撤销授权后重新在 Git 按钮里连一次即可。
