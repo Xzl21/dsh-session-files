@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-files",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Per-session file provenance tree for DSH: every file a session touched, left-to-right by turn, split into deliverable / process / input / temp lanes, with one-click recoverable cleanup of throwaway scripts.",
   "keywords": [
     "dsh",

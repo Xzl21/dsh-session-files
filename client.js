@@ -102,6 +102,7 @@ if (LOADER && typeof LOADER.load === 'function') {
           'label.actions': '动作',
           'label.note': '备注',
           'label.preview': '预览',
+          'label.reveal': '打开文件所在文件夹',
           'label.warnings': '警告',
           'label.unknown': '未知',
           'label.lane.filter': '点击切换这一道的显示',
@@ -122,6 +123,9 @@ if (LOADER && typeof LOADER.load === 'function') {
           'preview.binary': '二进制文件，无法预览',
           'preview.truncated': '内容已截断（仅显示前 64 KB）',
           'preview.loading': '正在读取预览…',
+          'preview.gone': '文件已不在工作区（可能已被清理到回收站）',
+          'reveal.failed': '打开文件夹失败',
+          'reveal.gone': '文件已不在，已打开它原来所在的文件夹',
           'zoom.in': '放大',
           'zoom.out': '缩小',
           'zoom.reset': '重置缩放',
@@ -130,6 +134,8 @@ if (LOADER && typeof LOADER.load === 'function') {
           'counts.tree': '树中',
           'counts.nodes': '{n} 个节点',
           'counts.tree.hint': '展示本会话触碰过的文件',
+          'counts.stale': '失效 {n}',
+          'counts.stale.hint': '这些临时记录在磁盘上已不存在；点清理即可清除这些记账',
           'counts.unfold': '另有 {n} 个未展开',
           'counts.unfold.hint': '被判为临时、但没有被任何工具调用触达，所以不在树中',
           'counts.unfold.more': '… 共 {n} 个',
@@ -192,6 +198,7 @@ if (LOADER && typeof LOADER.load === 'function') {
           'label.actions': 'Actions',
           'label.note': 'Note',
           'label.preview': 'Preview',
+          'label.reveal': 'Open containing folder',
           'label.warnings': 'Warnings',
           'label.unknown': 'unknown',
           'label.lane.filter': 'Toggle this lane',
@@ -212,6 +219,9 @@ if (LOADER && typeof LOADER.load === 'function') {
           'preview.binary': 'Binary file, cannot preview',
           'preview.truncated': 'Truncated (first 64 KB only)',
           'preview.loading': 'Loading preview…',
+          'preview.gone': 'File is no longer in the workspace (likely moved to the plugin trash)',
+          'reveal.failed': 'Could not open the folder',
+          'reveal.gone': 'The file is gone; opened the folder that used to hold it',
           'zoom.in': 'Zoom in',
           'zoom.out': 'Zoom out',
           'zoom.reset': 'Reset zoom',
@@ -220,6 +230,8 @@ if (LOADER && typeof LOADER.load === 'function') {
           'counts.tree': 'In tree',
           'counts.nodes': '{n} nodes',
           'counts.tree.hint': 'files this session touched',
+          'counts.stale': '{n} stale',
+          'counts.stale.hint': 'These temp records are no longer on disk; one cleanup run drops them',
           'counts.unfold': '{n} more not expanded',
           'counts.unfold.hint': 'Classified temp, but no tool call touched them, so they are not in the tree',
           'counts.unfold.more': '… {n} total',
@@ -853,6 +865,7 @@ if (LOADER && typeof LOADER.load === 'function') {
 .sf-counts .sf-clane{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}
 .sf-counts .sf-clane i{width:7px;height:7px;border-radius:50%;flex:none;background:var(--sf-lane,var(--sf-fg4));}
 .sf-counts .sf-clane b{font-weight:600;color:var(--sf-fg3);font-variant-numeric:tabular-nums;}
+.sf-counts .sf-clane em.sf-cstale{font-style:normal;font-size:10px;color:var(--sf-warn,var(--sf-fg4));opacity:.9;}
 .sf-unfoldbtn{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 10px;border:1px dashed var(--sf-lane-temp);border-radius:999px;background:transparent;font-family:inherit;font-size:11.5px;color:var(--sf-lane-temp);cursor:pointer;white-space:nowrap;}
 .sf-unfoldbtn:hover{background:rgba(209,134,43,.1);}
 .sf-unfoldbtn[aria-expanded="true"]{background:rgba(209,134,43,.16);}
@@ -1262,6 +1275,23 @@ if (LOADER && typeof LOADER.load === 'function') {
           [props.preview, node.path],
         );
 
+        const runReveal = useCallback(
+          function () {
+            if (typeof props.reveal !== 'function') return;
+            props
+              .reveal(node.path)
+              .then(function (body) {
+                // exists:false means we opened the folder that used to hold the file; say so
+                // instead of pretending the row is alive.
+                if (body && body.exists === false && typeof props.onNotice === 'function') props.onNotice(t('reveal.gone'));
+              })
+              .catch(function () {
+                if (typeof props.onNotice === 'function') props.onNotice(t('reveal.failed'));
+              });
+          },
+          [props.reveal, props.onNotice, node.path],
+        );
+
         useEffect(
           function () {
             runPreview();
@@ -1371,7 +1401,16 @@ if (LOADER && typeof LOADER.load === 'function') {
         const previewBlock = (function () {
           if (preview.status === 'loading') return h('div', { className: 'sf-hint' }, t('preview.loading'));
           if (preview.status === 'error') {
-            return h('div', { className: 'sf-errorline' }, t('error.network'), h('span', { className: 'sf-code' }, preview.code || 'unknown'));
+            // file-not-found is the normal case for a stale ledger row (the file was cleaned
+            // into the trash or deleted outside DSH); other codes do point at a host half that
+            // has not reloaded yet.
+            const gone = preview.code === 'file-not-found';
+            return h(
+              'div',
+              { className: gone ? 'sf-hint' : 'sf-errorline' },
+              gone ? t('preview.gone') : t('error.network'),
+              h('span', { className: 'sf-code' }, preview.code || 'unknown'),
+            );
           }
           if (preview.status === 'idle') return h('div', { className: 'sf-hint' }, '—');
           if (preview.binary) return h('div', { className: 'sf-hint' }, t('preview.binary') + ' · ' + fmtSize(preview.bytes));
@@ -1501,6 +1540,15 @@ if (LOADER && typeof LOADER.load === 'function') {
                 h('button', { type: 'button', className: 'sf-mini', onClick: runPreview }, t('action.retry')),
               ),
               previewBlock,
+              h(
+                'div',
+                { className: 'sf-drawer-actions' },
+                h(
+                  'button',
+                  { type: 'button', className: 'sf-mini', title: t('label.reveal'), onClick: runReveal },
+                  t('label.reveal'),
+                ),
+              ),
               preview.status === 'ready' && preview.truncated ? h('div', { className: 'sf-hint' }, t('preview.truncated')) : null,
             ),
           ),
@@ -1704,6 +1752,13 @@ if (LOADER && typeof LOADER.load === 'function') {
         const previewApi = useCallback(
           function (path) {
             return apiGet('/preview', { sessionId: sessionId, path: path, maxBytes: PREVIEW_MAX_BYTES });
+          },
+          [sessionId],
+        );
+
+        const revealApi = useCallback(
+          function (path) {
+            return apiPost('/reveal', { sessionId: sessionId, path: path });
           },
           [sessionId],
         );
@@ -2001,12 +2056,16 @@ if (LOADER && typeof LOADER.load === 'function') {
         const countLanes = laneOrder.map(function (lane) {
           const safeLane = LANE_SET[lane] ? lane : 'process';
           const count = typeof countsSrc[lane] === 'number' ? countsSrc[lane] : laneCounts[safeLane] || 0;
+          const stale = safeLane === 'temp' && typeof countsSrc.tempMissing === 'number' ? countsSrc.tempMissing : 0;
           return h(
             'span',
             { key: 'countlane-' + lane, className: 'sf-clane sf-lane-' + safeLane, title: t('lane.' + safeLane) },
             h('i', null),
             t('lane.' + safeLane),
             h('b', null, String(count)),
+            stale > 0
+              ? h('em', { key: 'stale', className: 'sf-cstale', title: t('counts.stale.hint') }, ' ' + t('counts.stale', { n: stale }))
+              : null,
           );
         });
 
@@ -2336,6 +2395,7 @@ if (LOADER && typeof LOADER.load === 'function') {
                     onClassify: classify,
                     onDelete: deletePaths,
                     preview: previewApi,
+                    reveal: revealApi,
                     onNotice: showToast,
                   })
                 : null,

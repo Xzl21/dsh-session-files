@@ -293,6 +293,19 @@ body `{ sessionId, paths?: string[], scope?: 'all'|'tree', dryRun?: boolean }`
 - **删除 = 移动到回收站**：`$DSH_HOME/session-files/trash/<sessionId>/<epochMs>/<relPath>`，
   返回的 `deleted` 是原相对路径。不 `fs.rm`。
 
+### POST `/api/session-files/reveal`
+body `{ sessionId, path }`
+→ `{ ok: true, path, exists: boolean, isDirectory: boolean }`
+- 在系统文件管理器里定位 `path`：Windows `explorer.exe /select,"<abs>"`、macOS `open -R <abs>`、
+  其它平台打开父目录。
+- **Windows 上必须自己拼命令行并用 `shell: true`**：把 `'/select,' + path` 当作 argv 交给 `spawn()`
+  时，libuv 会把整个 token 重新加引号（`"/select,D:\dir with spaces\f.docx"`），Explorer 解析失败后
+  会退回默认目录（文档）——用户看到的现象就是「点了却打开『文档』」。
+- 文件已不在磁盘（`exists:false`）时改为打开其父目录；父目录也不存在则回退到工作区根目录。
+- 错误码：`bad-path` 400、`no-workspace` 404、`reveal-failed` 500（连进程都起不来）。
+- **预览错误码**：`file-not-found` 表示该记录对应的文件已不在工作区（多为清理到回收站），客户端应显示
+  「文件已不在工作区」而不是「Host 未就绪」；其它错误码才提示 Host 需要重启。
+
 ### GET `/api/session-files/preview?sessionId=<id>&path=<relPath>&maxBytes=65536`
 → `{ ok: true, path, text, truncated: boolean, bytes: number, binary: boolean }`
 - **`binary` 恒带**（文本时为 `false`）。

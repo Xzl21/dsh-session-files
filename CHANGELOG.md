@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)；版本号与 `package.json` 同步。
 
+## [0.1.3] - 2026-11-12
+
+### 新增
+
+- **文件卡片弹窗新增「打开文件所在文件夹」**：在系统文件管理器里定位该文件（Windows
+  `explorer.exe /select,"<path>"`、macOS `open -R`、Linux 打开父目录）；文件已被清理时改为打开
+  它原来所在的文件夹，客户端提示「文件已不在，已打开它原来所在的文件夹」。
+- 新增 host 路由 `POST /api/session-files/reveal`（body `{ sessionId, path }` → `{ ok, path, exists, isDirectory }`）。
+
+### 修复
+
+- **「打开文件所在文件夹」弹出来的是「文档」**：Explorer 的 `/select,` 只认
+  `/select,"C:\dir with spaces\file.ext"` 这种「引号只包路径」的写法。原来把
+  `'/select,' + path` 当成一个 argv 交给 `spawn()`，libuv 会把整个 token 重新加引号，
+  Explorer 解析失败后就退回到默认目录（文档）。现在改为自己拼命令行并经 `cmd.exe`（`shell: true`）启动，
+  Explorer 收到的就是用户在命令行里手敲的那串参数；同时文件已不存在且其父目录也没了时回退到工作区根目录，
+  避免再次落到「文档」。
+- **预览失败的文案分不清原因**：`file-not-found` 之前也会显示「Host 半未生效或需要重启 DSH」。
+  现在 `file-not-found` 显示「文件已不在工作区（可能已被清理到回收站）」，只有其它错误码才提示 Host 未就绪。
+
+### 工程
+
+- `CONTRACT.md` §6 增加 `/reveal` 路由与「预览错误码」说明。
+- `test/integration.real.mjs` 的路由断言从 4 条更新为 5 条。
+
 ## [0.1.2] - 2026-11-12
 
 ### 修复

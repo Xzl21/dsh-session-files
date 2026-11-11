@@ -10,8 +10,9 @@
 // so the two callers can never drift apart. Every optional service is looked up
 // with `ctx.get(...)`; when one is missing the related feature is skipped instead
 // of failing plugin loading.
+import { spawn } from 'node:child_process';
 import { readdir, stat } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 import { buildLedger, shouldSkipDir } from './host/ledger.mjs';
 import { readSessionLog } from './host/logreader.mjs';
@@ -846,7 +847,97 @@ function createMethods(ctx) {
     }
   }
 
-  return { buildLedgerFor, classifyFor, classifyManyFor, deleteFor, previewFor };
+  /**
+   * Open the OS file manager at the node's path (`/select,` on Windows).
+   * A record whose file is already gone still reveals the folder that contained it,
+   * so the button keeps working for stale ledger rows; `exists` tells the client which
+   * case it got.
+   */
+  async function revealFor(sessionId, relPath) {
+    const rel = normalizeRelPath(relPath);
+    if (rel === null) return { ok: false, code: 'bad-path', status: 400 };
+    const loaded = await loadSession(ctx, sessionId);
+    if (!loaded.ok) return loaded;
+    const workspacePath = workspacePathOf(ctx, loaded.session, loaded.header);
+    if (!workspacePath) return { ok: false, code: 'no-workspace', status: 404 };
+    const absPath = join(workspacePath, rel);
+    let info = null;
+    try {
+      info = await stat(absPath);
+    } catch {
+      info = null;
+    }
+    const isDir = info !== null && info.isDirectory() === true;
+    let target = info === null ? dirname(absPath) : absPath;
+    let targetIsDir = info === null || isDir;
+    if (info === null) {
+      // Stale row (file already gone): show the folder that used to hold it, but only if that
+      // folder still exists -- a vanished folder would make Explorer fall back to its default
+      // directory again.
+      let parentOk = false;
+      try {
+        parentOk = (await stat(dirname(absPath))).isDirectory() === true;
+      } catch {
+        parentOk = false;
+      }
+      if (!parentOk) {
+        target = workspacePath;
+        targetIsDir = true;
+      }
+    }
+    const opened = revealInFileManager(target, targetIsDir);
+    if (!opened) return { ok: false, code: 'reveal-failed', status: 500 };
+    return { ok: true, path: rel, exists: info !== null, isDirectory: targetIsDir };
+  }
+
+  return { buildLedgerFor, classifyFor, classifyManyFor, deleteFor, previewFor, revealFor };
+}
+
+/**
+ * Best-effort "show this path in the OS file manager". Detached and fire-and-forget:
+ * the child outlives the request and its stderr is not interesting to us. Returns false
+ * only when we could not even start a process.
+ */
+function revealInFileManager(targetPath, isDirectory) {
+  const platform = process.platform;
+  if (platform === 'win32') {
+    // explorer.exe parses its own command line, and the only form it reliably accepts is
+    //   explorer.exe /select,"C:\dir with spaces\file.ext"
+    // i.e. the quotes wrap the *path*, not the switch. If we hand '/select,' + path to
+    // spawn() as an argv item, libuv re-quotes the whole token and Explorer cannot parse it;
+    // it silently falls back to the default folder (Documents), which looks like the button
+    // opened the wrong place. So build the command line ourselves and run it through cmd.exe
+    // (/d /s /c), which strips only the outer quotes and hands Explorer the exact text a user
+    // would type in a console.
+    const command = isDirectory
+      ? 'explorer.exe "' + targetPath + '"'
+      : 'explorer.exe /select,"' + targetPath + '"';
+    try {
+      const child = spawn(command, { shell: true, detached: true, stdio: 'ignore', windowsHide: false });
+      child.on('error', function () {});
+      child.unref();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  let command;
+  let args;
+  if (platform === 'darwin') {
+    command = 'open';
+    args = isDirectory ? [targetPath] : ['-R', targetPath];
+  } else {
+    command = 'xdg-open';
+    args = [isDirectory ? targetPath : dirname(targetPath)];
+  }
+  try {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: false });
+    child.on('error', function () {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ----- HTTP routes (contract section 6) -------------------------------------
@@ -925,7 +1016,21 @@ function createHandlers(methods) {
     });
   };
 
-  return { handleLedger, handleClassify, handleDelete, handlePreview };
+  const handleReveal = async (ctx, req, res) => {
+    if (requestRejection(req) !== 0) return json(res, 403, fail('forbidden'));
+    if (req.method !== 'POST') return methodNotAllowed(res, 'POST');
+    const body = await readBody(req);
+    if (body.error === 'body-too-large') return json(res, 413, fail('body-too-large'));
+    if (body.error) return json(res, 400, fail(body.error));
+    const value = body.value || {};
+    const sessionId = pickSessionId(value.sessionId);
+    if (!sessionId) return json(res, 400, fail('bad-session-id'));
+    const result = await methods.revealFor(sessionId, value.path);
+    if (!result.ok) return json(res, result.status || 500, fail(result.code, result.params, result.warnings ? { warnings: result.warnings } : undefined));
+    return json(res, 200, { ok: true, path: result.path, exists: result.exists === true });
+  };
+
+  return { handleLedger, handleClassify, handleDelete, handlePreview, handleReveal };
 }
 
 function registerRoutes(ctx, methods) {
@@ -940,6 +1045,7 @@ function registerRoutes(ctx, methods) {
     { path: `${ROUTE_PREFIX}/classify`, handler: handlers.handleClassify },
     { path: `${ROUTE_PREFIX}/delete`, handler: handlers.handleDelete },
     { path: `${ROUTE_PREFIX}/preview`, handler: handlers.handlePreview },
+    { path: `${ROUTE_PREFIX}/reveal`, handler: handlers.handleReveal },
   ];
   for (const route of routes) {
     runEffect(ctx, () =>

@@ -356,7 +356,7 @@ async function main() {
   const routes = [];
   const unmount = mountPlugin(routes);
   const server = await startServer(routes);
-  check('plugin registers four exact routes', routes.length === 4 && routes.every((route) => route.kind === 'exact' && typeof route.path === 'string'), routes.map((route) => route.path));
+  check('plugin registers five exact routes', routes.length === 5 && routes.every((route) => route.kind === 'exact' && typeof route.path === 'string'), routes.map((route) => route.path));
 
   let exitCode = 0;
   try {
