@@ -913,10 +913,13 @@ function finalNodeId(path) {
 
 /**
  * buildTree({ fileOps, scanFiles, scanTotal?, sessionCreatedAt, overrides, limits,
- *            turnTimes?, warnings? }) -> { columns, nodes, edges, counts, warnings, workspace? }
+ *            turnTimes?, gonePaths?, warnings? }) -> { columns, nodes, edges, counts, warnings, workspace? }
  * `fileOps[].path` and `scanFiles[].relPath` are expected to be workspace-relative.
  * `scanTotal` is the scanner's full file count *before* maxScanFiles truncation
  * (CONTRACT.md §5 `workspace.scanned`); defaults to `scanFiles.length`.
+ * `gonePaths` lists records the host has pruned (temp paths whose file no longer
+ * exists, e.g. moved to trash by another session's cleanup). A pruned path that
+ * shows up in the scan again is honoured normally.
  */
 export function buildTree(input) {
   const opts = input && typeof input === 'object' ? input : {};
@@ -926,6 +929,12 @@ export function buildTree(input) {
   const sessionCreatedAt = isNum(opts.sessionCreatedAt) ? opts.sessionCreatedAt : null;
   const maxNodes = normalizeLimit(opts.limits && opts.limits.maxNodes, DEFAULT_MAX_NODES);
   const turnTimes = normalizeTurnTimes(opts.turnTimes);
+  const goneKeys = new Set();
+  for (const raw of Array.isArray(opts.gonePaths) ? opts.gonePaths : []) {
+    if (typeof raw !== 'string') continue;
+    const rel = cleanRel(toPosix(raw));
+    if (rel) goneKeys.add(rel.toLowerCase());
+  }
   const scanTotal =
     isNum(opts.scanTotal) && opts.scanTotal >= 0 ? Math.floor(opts.scanTotal) : null;
 
@@ -1104,6 +1113,22 @@ export function buildTree(input) {
     entry.overridden = overrideCls !== null;
     entry.note = override && typeof override.note === 'string' ? override.note : null;
     entry.hasOverride = !!override;
+  }
+
+  // ---- pruned records: temp paths this session touched whose file is gone.
+  // Another session (or the OS) may move a file to the plugin trash; this session's
+  // event log still mentions it. Once the host records such a path as gone, drop the
+  // entry so the tree stops counting a file that is not there any more. A path that
+  // comes back on disk (entry.scan) is kept: pruning only forgets, it never hides.
+  // Runs after classification so only final-lane `temp` records are forgotten — a
+  // written/edited/presented artifact or a non-temp override keeps its record.
+  if (goneKeys.size > 0) {
+    for (const [key, entry] of entries) {
+      if (!goneKeys.has(key)) continue;
+      if (entry.scan) continue;
+      if (entry.cls !== 'temp') continue;
+      entries.delete(key);
+    }
   }
 
   // ---- columns
@@ -1494,6 +1519,7 @@ export function buildLedger(input) {
     scanTotal: isNum(opts.scanTotal) && opts.scanTotal >= 0 ? Math.floor(opts.scanTotal) : null,
     sessionCreatedAt,
     overrides: opts.overrides,
+    gonePaths: opts.gonePaths,
     limits: opts.limits,
     turnTimes: extractTurnTimes(opts.events),
     warnings,

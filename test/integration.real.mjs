@@ -285,6 +285,22 @@ function writeSyntheticSessionLog(home, workspacePath, sessionId) {
   return file;
 }
 
+function writeSyntheticLogWithWrite(home, workspacePath, sessionId, relPath) {
+  const header = { type: 'session', version: 4, id: sessionId, createdAt: Date.now() - 86_400_000, cwd: workspacePath, isSeeded: false };
+  const turnStart = { type: 'turn/start', seq: 1, time: Date.now() - 3_600_000, data: { turn: 1 } };
+  const call = {
+    type: 'tool/call',
+    seq: 2,
+    time: Date.now() - 3_500_000,
+    data: { name: 'write', turn: 1, arguments: JSON.stringify({ file_path: relPath, content: 'print(1)\n' }) },
+  };
+  const lines = [`${JSON.stringify(header)}\n`, `${JSON.stringify(turnStart)}\n`, `${JSON.stringify(call)}\n`];
+  const file = join(home, 'sessions', '--integration--', sessionId, 'session.v4.jsonl.zstd');
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, Buffer.concat(lines.map((line) => zstdCompressSync(Buffer.from(line, 'utf8')))));
+  return file;
+}
+
 function copyRealSessionLog(home, sourceFile, sessionId) {
   const file = join(home, 'sessions', '--integration--', sessionId, 'session.v4.jsonl.zstd');
   mkdirSync(dirname(file), { recursive: true });
@@ -515,6 +531,46 @@ async function main() {
       failed += 1;
       failures.push('throwaway ledger could not be built');
     }
+    // ----- part B2: stale temp records are pruned, never skipped forever -------
+    section('stale temp records (pruned, not skipped)');
+    const stHome = mkdtempSync(join(tmpdir(), 'dsh-sf-stalehome-'));
+    const stWorkspace = mkdtempSync(join(tmpdir(), 'dsh-sf-stalews-'));
+    const stRel = 'probe_gone.py';
+    writeFileSync(join(stWorkspace, stRel), 'print(1)\n');
+    const stSessionId = `session-${randomUUID()}`;
+    writeSyntheticLogWithWrite(stHome, stWorkspace, stSessionId, stRel);
+    process.env.DSH_HOME = stHome;
+    {
+      const live = await requestJson(server.base, ledgerUrl(stSessionId));
+      const liveLedger = (live.json && live.json.ledger) || {};
+      const liveNode = (liveLedger.nodes || []).find((node) => node.path === stRel);
+      check('a touched temp file starts as an existing temp node', Boolean(liveNode) && liveNode.lane === 'temp' && liveNode.exists === true, liveNode);
+
+      // The file vanishes outside the plugin (user deletion, or another session's cleanup).
+      rmSync(join(stWorkspace, stRel), { force: true });
+
+      const gone = await requestJson(server.base, ledgerUrl(stSessionId));
+      const goneLedger = (gone.json && gone.json.ledger) || {};
+      const goneNode = (goneLedger.nodes || []).find((node) => node.path === stRel);
+      check('a temp node whose file is gone reports exists:false', Boolean(goneNode) && goneNode.exists === false, goneNode);
+      check('counts.tempMissing reports the stale record', (goneLedger.counts || {}).tempMissing >= 1, goneLedger.counts);
+
+      const dry = await requestJson(server.base, `${ROUTE_PREFIX}/delete`, { method: 'POST', body: { sessionId: stSessionId, scope: 'all', dryRun: true } });
+      const dryJson = dry.json || {};
+      check('dry run reports the vanished record as pruned', Array.isArray(dryJson.pruned) && dryJson.pruned.includes(stRel), dryJson);
+      check('dry run does not claim to delete the vanished record', Array.isArray(dryJson.deleted) && !dryJson.deleted.includes(stRel), dryJson);
+
+      const done = await requestJson(server.base, `${ROUTE_PREFIX}/delete`, { method: 'POST', body: { sessionId: stSessionId, scope: 'all' } });
+      const doneJson = done.json || {};
+      check('cleanup prunes it (deleted stays empty)', done.status === 200 && Array.isArray(doneJson.pruned) && doneJson.pruned.includes(stRel) && Array.isArray(doneJson.deleted) && doneJson.deleted.length === 0, doneJson);
+      const afterLedger = (doneJson.ledger || {});
+      check('the pruned record is gone from the returned ledger', !(afterLedger.nodes || []).some((node) => node.path === stRel), (afterLedger.nodes || []).map((node) => node.path));
+      check('the stale record is not resurrected by the next ledger build', !(await requestJson(server.base, ledgerUrl(stSessionId))).json || !(((await requestJson(server.base, ledgerUrl(stSessionId))).json.ledger.nodes) || []).some((node) => node.path === stRel));
+      check('pruning never touches the disk', !existsSync(join(stWorkspace, stRel)));
+    }
+    rmSync(stHome, { recursive: true, force: true });
+    rmSync(stWorkspace, { recursive: true, force: true });
+
     // ----- part C: the session_files agent tool over a throwaway workspace ---
     section('session_files tool (throwaway workspace)');
     const toolHome = mkdtempSync(join(tmpdir(), 'dsh-sf-toolhome-'));

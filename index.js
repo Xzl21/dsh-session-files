@@ -21,10 +21,12 @@ import {
   isInside,
   normalizeRelPath,
   previewFile,
+  readGone,
   readOverrides,
   resolveWorkspacePath,
   setOverride,
   trashFiles,
+  updateGone,
 } from './host/store.mjs';
 
 export const name = 'dsh-session-files';
@@ -44,6 +46,9 @@ const CLS_SET = new Set(CLASSES);
 const KEEP_EVENT_TYPES = new Set(['turn/start', 'turn/end', 'tool/call', 'tool/result']);
 
 const MAX_SCAN_FILES = 600;
+// Temp paths whose existence is checked on every ledger build. Above this the
+// pruning hint is simply not offered; cleanup still stats everything it touches.
+const MAX_TEMP_STAT = 400;
 const MAX_SCAN_DEPTH = 6;
 const MAX_SCAN_ENTRIES = MAX_SCAN_FILES * 8;
 const SCAN_CONCURRENCY = 8;
@@ -508,6 +513,14 @@ function ledgerCounts(ledger, nodes) {
 }
 
 /** Add the fields the contract puts on the HTTP/tool boundary (live/source/generatedAt). */
+function withTempMissing(counts, rawLedger) {
+  // ledgerCounts() derives every lane from nodes, which cannot know about files that are
+  // already gone. Keep the stale-record count the ledger build measured (contract section 5).
+  const stale = rawLedger && rawLedger.counts && typeof rawLedger.counts.tempMissing === 'number' ? rawLedger.counts.tempMissing : 0;
+  if (stale > 0 && counts && typeof counts === 'object') counts.tempMissing = stale;
+  return counts;
+}
+
 function finalizeLedger(rawLedger, meta) {
   const nodes = Array.isArray(rawLedger && rawLedger.nodes) ? rawLedger.nodes : [];
   const ledger = {
@@ -518,7 +531,7 @@ function finalizeLedger(rawLedger, meta) {
     generatedAt: Date.now(),
     live: typeof rawLedger?.live === 'boolean' ? rawLedger.live : meta.live,
     source: rawLedger?.source === 'live' || rawLedger?.source === 'log' ? rawLedger.source : meta.source,
-    counts: ledgerCounts(rawLedger, nodes),
+    counts: withTempMissing(ledgerCounts(rawLedger, nodes), rawLedger),
     lanes: Array.isArray(rawLedger?.lanes) && rawLedger.lanes.length === LANES.length ? rawLedger.lanes : LANES,
     columns: Array.isArray(rawLedger?.columns) ? rawLedger.columns : [],
     nodes,
@@ -552,6 +565,7 @@ function createMethods(ctx) {
     }
 
     const overrides = await readOverrides(sessionId);
+    const gonePaths = await readGone(sessionId);
     // buildLedger is pure: the caller supplies the clock, the live flag, the source and the
     // per-turn start times (contract section 3). Warnings are forwarded so the ledger can carry them.
     const turnTimes = new Map();
@@ -571,6 +585,7 @@ function createMethods(ctx) {
         scanFiles,
         scanTotal,
         overrides,
+        gonePaths,
         generatedAt: Date.now(),
         live: loaded.live === true,
         source: loaded.source === 'live' ? 'live' : 'log',
@@ -582,6 +597,37 @@ function createMethods(ctx) {
     }
     if (!rawLedger || typeof rawLedger !== 'object') {
       return { ok: false, code: 'ledger-failed', status: 500 };
+    }
+
+    // Temp records whose file is already gone are still part of the history, but
+    // both halves must say so: `exists:false` lets the list/UI mark them, and
+    // `counts.tempMissing` tells the cleanup path how many stale records it can
+    // forget. Without this the panel claims "178 temp files" while cleanup moves 0.
+    if (workspacePath && Array.isArray(rawLedger.nodes) && rawLedger.nodes.length > 0) {
+      const checkedPaths = [];
+      const checked = new Set();
+      for (const node of rawLedger.nodes) {
+        if (!node || node.lane !== 'temp' || typeof node.path !== 'string') continue;
+        if (checked.has(node.path)) continue;
+        checked.add(node.path);
+        if (checkedPaths.length >= MAX_TEMP_STAT) break;
+        checkedPaths.push(node.path);
+      }
+      if (checkedPaths.length > 0) {
+        const present = new Set(await existingWorkspaceFiles(workspacePath, checkedPaths));
+        const missing = new Set();
+        for (const rel of checkedPaths) {
+          if (!present.has(rel)) missing.add(rel);
+        }
+        if (missing.size > 0) {
+          for (const node of rawLedger.nodes) {
+            if (!node || node.lane !== 'temp' || typeof node.path !== 'string') continue;
+            if (missing.has(node.path)) node.exists = false;
+          }
+          rawLedger.counts = rawLedger.counts && typeof rawLedger.counts === 'object' ? rawLedger.counts : {};
+          rawLedger.counts.tempMissing = missing.size;
+        }
+      }
     }
     return {
       ok: true,
@@ -740,11 +786,16 @@ function createMethods(ctx) {
     }
 
     const deletable = await existingWorkspaceFiles(workspacePath, candidates);
+    const deletableSet = new Set(deletable);
+    // Candidates that are not on disk are stale ledger records, not failures: the
+    // file was already moved to trash (possibly by another session) or deleted from
+    // outside. Cleanup forgets those records so the counters finally match reality.
+    const pruned = [];
     for (const rel of candidates) {
-      if (!deletable.includes(rel) && !skipped.includes(rel)) skipped.push(rel);
+      if (!deletableSet.has(rel) && !pruned.includes(rel)) pruned.push(rel);
     }
-    if (deletable.length === 0) return { ok: true, deleted: [], skipped, ledger, dryRun: dryRun ? true : undefined };
-    if (dryRun) return { ok: true, dryRun: true, deleted: deletable, skipped, ledger };
+    if (dryRun) return { ok: true, dryRun: true, deleted: deletable, pruned, skipped, ledger };
+    if (deletable.length === 0 && pruned.length === 0) return { ok: true, deleted: [], pruned: [], skipped, ledger };
 
     let deleted = [];
     try {
@@ -757,9 +808,22 @@ function createMethods(ctx) {
       return { ok: false, code: 'trash-failed', status: 500, params: { message: String((error && error.message) || error) } };
     }
 
+    // Only forget paths that are really gone: a path whose trash move failed is
+    // still on disk and must keep its record. A pruned path that is back on disk
+    // and now deleted also leaves the gone list.
+    const movedSet = new Set(deleted);
+    const goneToAdd = pruned.filter((rel) => !movedSet.has(rel));
+    if (goneToAdd.length > 0 || deleted.length > 0) {
+      try {
+        await updateGone(sessionId, { add: goneToAdd, remove: deleted });
+      } catch (error) {
+        return { ok: false, code: 'store-failed', status: 500, params: { message: String((error && error.message) || error) } };
+      }
+    }
+
     const rebuilt = await buildLedgerFor(sessionId);
     if (!rebuilt.ok) return rebuilt;
-    return { ok: true, deleted, skipped, ledger: rebuilt.ledger };
+    return { ok: true, deleted, pruned: goneToAdd, skipped, ledger: rebuilt.ledger };
   }
 
   async function previewFor(sessionId, relPath, maxBytes) {
@@ -831,7 +895,7 @@ function createHandlers(methods) {
     if (value.dryRun !== undefined && typeof value.dryRun !== 'boolean') return json(res, 400, fail('bad-dry-run'));
     const result = await methods.deleteFor(sessionId, value.paths, { scope, dryRun: value.dryRun === true });
     if (!result.ok) return json(res, result.status || 500, fail(result.code, result.params, result.warnings ? { warnings: result.warnings } : undefined));
-    const payload = { ok: true, deleted: result.deleted, skipped: result.skipped, ledger: result.ledger };
+    const payload = { ok: true, deleted: result.deleted, pruned: result.pruned || [], skipped: result.skipped, ledger: result.ledger };
     if (result.dryRun === true) payload.dryRun = true;
     return json(res, 200, payload);
   };
@@ -1130,9 +1194,17 @@ function createToolExecute(ctx, methods) {
         if (!result.ok) return toolFailure(result.code, result.params);
         const workspaceRemaining = result.ledger && result.ledger.workspace && Number.isFinite(result.ledger.workspace.tempPathCount) ? result.ledger.workspace.tempPathCount : 0;
         const remainingNodes = Array.isArray(result.ledger && result.ledger.nodes) ? result.ledger.nodes.filter((node) => node && node.lane === 'temp').length : 0;
+        const pruned = Array.isArray(result.pruned) ? result.pruned : [];
         const lines = [`${dryRun ? 'dry run: would move' : 'moved'} ${result.deleted.length} temp file(s) to the plugin trash`];
-        if (result.deleted.length === 0 && result.skipped.length === 0) {
+        if (result.deleted.length === 0 && result.skipped.length === 0 && pruned.length === 0) {
           lines[0] = `nothing to clean up; ${summarizeLedgerCounts(result.ledger)}`;
+        }
+        if (pruned.length > 0) {
+          const preview = pruned.slice(0, 8).join(', ');
+          const more = pruned.length > 8 ? `, +${pruned.length - 8} more` : '';
+          lines.push(
+            `${dryRun ? 'would prune' : 'pruned'} ${pruned.length} stale record(s) (file already gone, nothing on disk was touched): ${preview}${more}`,
+          );
         }
         if (result.skipped.length > 0) {
           const preview = result.skipped.slice(0, 8).join(', ');

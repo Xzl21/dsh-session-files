@@ -48,6 +48,14 @@ export function overridesFile(sessionId) {
   return join(overridesRoot(), `${sessionId}.json`);
 }
 
+export function goneRoot() {
+  return join(stateRoot(), 'gone');
+}
+
+export function goneFile(sessionId) {
+  return join(goneRoot(), `${sessionId}.json`);
+}
+
 export function trashRoot() {
   return join(stateRoot(), 'trash');
 }
@@ -227,6 +235,70 @@ export async function setOverride(sessionId, relPath, patch) {
     if (changed) await writeJsonAtomic(file, { version: 1, sessionId, files });
     return normalizeOverrides({ files });
   });
+}
+
+// ----- pruned records ------------------------------------------------------
+
+const GONE_LIMIT = 20000;
+
+function normalizeGoneList(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const value of Array.isArray(raw) ? raw : []) {
+    const rel = normalizeRelPath(value);
+    if (rel === null || seen.has(rel)) continue;
+    seen.add(rel);
+    out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * Records this session has pruned: temp paths whose file no longer exists (for
+ * example because another session moved it to the plugin trash). Pruning is a
+ * ledger-only operation: nothing on disk is touched, and a path that reappears
+ * in the workspace scan is shown again.
+ * @returns {Promise<string[]>} workspace-relative posix paths
+ */
+export async function readGone(sessionId) {
+  try {
+    assertSessionId(sessionId);
+  } catch {
+    return [];
+  }
+  const raw = await readStateFile(goneFile(sessionId));
+  return normalizeGoneList(raw && raw.paths);
+}
+
+/**
+ * Add and/or remove pruned records for one session.
+ * @param {{add?: string[], remove?: string[]}} patch
+ * @returns {Promise<string[]>} the new pruned list
+ */
+export async function updateGone(sessionId, patch) {
+  assertSessionId(sessionId);
+  const add = normalizeRelPathList(patch && patch.add);
+  const remove = new Set(normalizeRelPathList(patch && patch.remove));
+  if (add.length === 0 && remove.size === 0) return readGone(sessionId);
+  return withSessionLock(sessionId, async () => {
+    const file = goneFile(sessionId);
+    const raw = await readStateFile(file);
+    const next = normalizeGoneList([...(raw && Array.isArray(raw.paths) ? raw.paths : []), ...add]).filter(
+      (rel) => !remove.has(rel),
+    );
+    const capped = next.length > GONE_LIMIT ? next.slice(next.length - GONE_LIMIT) : next;
+    await writeJsonAtomic(file, { version: 1, sessionId, paths: capped });
+    return capped;
+  });
+}
+
+function normalizeRelPathList(raw) {
+  const out = [];
+  for (const value of Array.isArray(raw) ? raw : []) {
+    const rel = normalizeRelPath(value);
+    if (rel !== null && !out.includes(rel)) out.push(rel);
+  }
+  return out;
 }
 
 async function moveFile(source, destination) {

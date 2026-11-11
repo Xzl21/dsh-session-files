@@ -181,9 +181,12 @@ export function buildTree({ fileOps, scanFiles, sessionCreatedAt, overrides, lim
   "generatedAt": 1762400123456,
   "live": true,                                 // 是否来自 live session
   "source": "live" | "log",                     // 数据来源
-  "counts": { "deliverable": 2, "process": 7, "input": 12, "temp": 9, "files": 30 },
+  "counts": { "deliverable": 2, "process": 7, "input": 12, "temp": 9, "files": 30, "tempMissing": 4 },
   // counts 是**文件级**计数（含没有展开成节点的扫描文件）；nodes 是**可视图**。
   // 两者不相等是正常的，UI 必须分开表述（「工作区 30 个文件 · 树中 12 个节点」）。
+  // tempMissing（可选）：temp 记录中「磁盘上已经不存在」的条数（本次最多核对 400 条，
+  // 因此它是**下限**而不是精确值）。它解释了一个常见的困惑：面板说「9 个临时文件」而
+  // 清理只移走 5 个——剩下 4 个只是历史记账。清理（§6 `/delete`）会清掉这些记录。
   "workspace": {                                 // 可选；仅当存在「未展开的 temp 文件」时出现
     "scanned": 443,                // 本次扫描到的文件总数（**截断到 maxScanFiles 之前**的全量计数）
     "tempPathCount": 180,          // 被判为 temp、但没有出现在 nodes 里的文件数（= tempPaths 去重后总数，含被 500 截断的部分）
@@ -234,6 +237,10 @@ export function buildTree({ fileOps, scanFiles, sessionCreatedAt, overrides, lim
 规则：
 - `nodes[].id` = `${path}#${suffix}`，suffix ∈ `i`（input 列）、`t<turn>`、`final`。同一 path 在
   同一列最多 1 个节点。`nodes` 按 `(col, lane 顺序, path)` 排好序，UI 不用再排。
+- `nodes[].exists` 必须来自**磁盘核对**，不能只看「有没有被标记 deleted」：temp 节点若其文件
+  已不在工作区（例如被另一次清理移到回收站、或用户自己删了），`exists` 为 `false`，UI 据此
+  把该行标灰并显示 `node.gone`。核对只做 temp 道、最多 400 条（`MAX_TEMP_STAT`），其余道沿用
+  扫描/事件结论。
 - `input` 列的节点只给「preexisting 且未在会话中被写过」的文件（扫描出来的），最多 40 个；
   选取优先级：**先按最终 lane 排序 `input` → `process`，同 lane 内按 mtime 倒序**。
   **最终分类为 `temp` 的 preexisting 文件不进 input 列**——它们是「历史垃圾」，由
@@ -270,13 +277,19 @@ body `{ sessionId, path, cls: 'deliverable'|'process'|'input'|'temp'|null, note?
 
 ### POST `/api/session-files/delete`
 body `{ sessionId, paths?: string[], scope?: 'all'|'tree', dryRun?: boolean }`
-→ `{ ok: true, deleted: string[], skipped: string[], dryRun?: true, ledger: Ledger }`
-- 只允许删 `temp` 道的文件（其它道进 `skipped`）；`skipped` 里也可含不存在/越界路径。
+→ `{ ok: true, deleted: string[], pruned: string[], skipped: string[], dryRun?: true, ledger: Ledger }`
+- 只允许删 `temp` 道的文件（其它道进 `skipped`）；`skipped` 里也可含越界路径。
+- **`deleted` 与 `pruned` 分开**：`deleted` = 真正移到回收站的文件；`pruned` = 候选里文件**早已
+  不在磁盘**的失效记账，只从 ledger 里忘掉、不动磁盘（因此 `pruned` 可以是「清理成功但删了 0
+  个文件」）。两者都为空才算「没有可清理的东西」。
 - `scope`（默认 `'all'`）：
   - `'tree'`：只删 `paths` 里给出的、且在 ledger 节点中属于 `temp` 道的文件。
   - `'all'`：`paths`（若有）+ 当前 ledger 里所有 temp 节点 + `ledger.workspace.tempPaths`（去重后统一删）。
     **这是 UI「清理临时文件」主按钮的行为**（含历史遗留的 temp 文件）。
-- `dryRun:true` 只返回将要删的列表，不动磁盘。
+- `dryRun:true` 只返回将要删/剪的列表，不动磁盘、不动记账。
+- **剪枝语义**：被剪掉的路径写入 `$DSH_HOME/session-files/gone/<sessionId>.json`
+  （`{version:1, sessionId, paths:[]}`，上限 20000 条），重建 ledger 时据此丢弃同名旧记账；
+  若该文件**又回到**工作区且被扫描/事件重新记录，则以新记录为准（剪枝只对「无新证据」的记录生效）。
 - **删除 = 移动到回收站**：`$DSH_HOME/session-files/trash/<sessionId>/<epochMs>/<relPath>`，
   返回的 `deleted` 是原相对路径。不 `fs.rm`。
 
@@ -345,5 +358,8 @@ body `{ sessionId, paths?: string[], scope?: 'all'|'tree', dryRun?: boolean }`
 - 覆盖/备注：`$DSH_HOME/session-files/overrides/<sessionId>.json`
   `{ "version": 1, "sessionId": "...", "files": { "<relPath>": { "cls": "temp", "note": "…", "updatedAt": 1762 } } }`
 - 回收站：`$DSH_HOME/session-files/trash/<sessionId>/<epochMs>/<relPath>`
+- 剪枝记账：`$DSH_HOME/session-files/gone/<sessionId>.json`
+  `{ "version": 1, "sessionId": "...", "paths": ["verify/dbg.py", "…"] }`（上限 20000 条，超出丢最旧的）
+  语义：这些路径的旧 ledger 记录已被清理命令确认失效，重建 ledger 时不再展示；文件若重新出现并被记录，以新记录为准。
 - 写文件要原子（tmp 文件 + rename），并发写用串行队列；读失败一律降级为空。
 - **不要**把状态写到 workspace 里（那正是用户抱怨的污染源）。

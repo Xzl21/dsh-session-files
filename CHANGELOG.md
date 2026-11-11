@@ -2,6 +2,26 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)；版本号与 `package.json` 同步。
 
+## [0.1.2] - 2026-11-12
+
+### 修复
+
+- **「显示有 N 个临时文件，清理却说没有需要清理的」**：temp 记账只增不减——文件早已被移进回收站
+  （或被用户删掉）后，ledger 仍把它们算进 `counts.temp`，而清理命令只移动磁盘上真实存在的文件，
+  于是面板显示 178、点清理却「没有临时文件需要清理」，数字永远不掉。现在三层都对上了：
+  - host：重建 ledger 时对 temp 节点做磁盘核对（最多 400 条），已消失的节点 `exists:false`，
+    并在 `counts.tempMissing` 报出失效记账条数；
+  - host：`/delete` 把「文件早已不在」的候选变成 `pruned`（只忘记账、不动磁盘），写入
+    `$DSH_HOME/session-files/gone/<sessionId>.json`，重建 ledger 时丢弃这些旧记录；
+  - client：列表把 `exists:false` 的 temp 行标灰并显示「文件已不存在」；「清理全部临时文件」
+    在无可删文件但存在失效记账时，仍会执行一次剪枝并提示「已清除 N 条失效记账」。
+
+### 工程
+
+- `CONTRACT.md` §5 补充 `counts.tempMissing` 与 `nodes[].exists` 的磁盘核对口径；
+  §6 `/delete` 增加 `pruned` 字段与剪枝语义；§10 增加 `gone/` 存储说明。
+- 新增 `test/cleanup-stale.test.mjs`（失效记账：核对 → 剪枝 → 计数归零 → 文件回归不会被误忘）。
+
 ## [0.1.1] - 2026-11-11
 
 ### 修复

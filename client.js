@@ -110,6 +110,7 @@ if (LOADER && typeof LOADER.load === 'function') {
           'source.log': '历史日志',
           'toast.cleaned': '已清理 {n} 个临时文件',
           'toast.skipped': '跳过 {n} 个',
+          'toast.pruned': '已清除 {n} 条失效记账（文件早已不在工作区）',
           'toast.cleaning': '正在统计临时文件…',
           'toast.cleanedAll': '已清理 {n} 个（含 {m} 个历史遗留）',
           'toast.saved': '已保存',
@@ -199,6 +200,7 @@ if (LOADER && typeof LOADER.load === 'function') {
           'source.log': 'Log',
           'toast.cleaned': 'Cleaned up {n} temp files',
           'toast.skipped': 'Skipped {n}',
+          'toast.pruned': 'Cleared {n} stale record(s) (files were already gone)',
           'toast.cleaning': 'Counting temp files…',
           'toast.cleanedAll': 'Cleaned {n} ({m} historical)',
           'toast.saved': 'Saved',
@@ -1747,8 +1749,21 @@ if (LOADER && typeof LOADER.load === 'function') {
                   historical = backlog.length;
                 }
                 if (targets.length === 0) {
-                  showToast(t('cleanup.none'));
-                  return null;
+                  // Nothing on disk to move, but the host may still hold records for temp
+                  // files that are already gone (moved to trash by another session, deleted
+                  // from outside). Pruning those records is what makes the counter drop.
+                  const stalePruned = Array.isArray(body && body.pruned) ? body.pruned.length : 0;
+                  if (stalePruned === 0) {
+                    showToast(t('cleanup.none'));
+                    return null;
+                  }
+                  return apiPost('/delete', { sessionId: sessionId, scope: 'all', paths: [] }).then(function (response) {
+                    const result = response || {};
+                    if (result.ledger) applyLedger(result.ledger);
+                    const pruned = Array.isArray(result.pruned) ? result.pruned.length : stalePruned;
+                    showToast(t('toast.pruned', { n: pruned }));
+                    if (!result.ledger) load();
+                  });
                 }
                 if (!confirmFn(t('confirm.cleanupAll', { n: targets.length, m: historical }))) return null;
                 // Step 2: for real.
@@ -1757,10 +1772,12 @@ if (LOADER && typeof LOADER.load === 'function') {
                   if (result.ledger) applyLedger(result.ledger);
                   const deleted = Array.isArray(result.deleted) ? result.deleted.length : 0;
                   const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0;
+                  const pruned = Array.isArray(result.pruned) ? result.pruned.length : 0;
                   let text;
                   if (deleted > 0 && historical > 0) text = t('toast.cleanedAll', { n: deleted, m: historical });
                   else if (deleted > 0) text = t('toast.cleaned', { n: deleted });
-                  else text = t('cleanup.none');
+                  else text = pruned > 0 ? t('toast.pruned', { n: pruned }) : t('cleanup.none');
+                  if (deleted > 0 && pruned > 0) text += ' · ' + t('toast.pruned', { n: pruned });
                   if (skipped > 0) text += ' · ' + t('toast.skipped', { n: skipped });
                   showToast(text);
                   if (!result.ledger) load();
@@ -2143,7 +2160,11 @@ if (LOADER && typeof LOADER.load === 'function') {
           // nodes=0 but counts.files>0 is a real state: the workspace scan found files
           // that no tool call ever touched, so the tree is empty while the counts are not.
           if (fileCount > 0) {
-            const cleanable = backlogPaths.length > 0 ? backlogPaths.length : typeof countsSrc.temp === 'number' ? countsSrc.temp : 0;
+            // Temp records whose file is already gone count as "cleanable": cleanup only
+            // prunes the ledger for them, but that is exactly what makes the counter drop.
+            const staleTemp = typeof countsSrc.tempMissing === 'number' ? countsSrc.tempMissing : 0;
+            const liveTemp = typeof countsSrc.temp === 'number' ? Math.max(0, countsSrc.temp - staleTemp) : 0;
+            const cleanable = Math.max(backlogPaths.length, liveTemp + staleTemp);
             return h(
               'div',
               { className: 'sf-status' },
