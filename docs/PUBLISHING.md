@@ -33,7 +33,7 @@ git push origin v0.1.0
 node tools/publish.mjs Xzl21/dsh-session-files
 
 # 需要带 tag 时
-node tools/publish.mjs Xzl21/dsh-session-files --tag v0.1.1
+node tools/publish.mjs Xzl21/dsh-session-files --tag v0.1.4
 
 # 先看要做什么
 node tools/publish.mjs Xzl21/dsh-session-files --dry-run
@@ -90,27 +90,53 @@ tarball: https://github.com/Xzl21/dsh-session-files/releases/latest/download/dsh
 ```yaml
 url: https://github.com/Xzl21/dsh-session-files
 name: Xzl21/dsh-session-files
-category: ui
-description:
-  en: Per-session file tree that shows every file a session touched, split into deliverable, process, input and temp lanes, with recoverable one-click cleanup.
-  zh: 按会话展示 agent 碰过的所有文件，按交付/过程/输入/临时四道铺成从左到右的树，并支持可恢复的一键清理。
-icon: https://raw.githubusercontent.com/Xzl21/dsh-session-files/main/assets/icon-180.png
+category: session
 tarball: https://github.com/Xzl21/dsh-session-files/releases/latest/download/dsh-session-files.tgz
+icon: https://raw.githubusercontent.com/Xzl21/dsh-session-files/main/assets/icon-180.png
+description:
+  en: "Per-session file tree: ..."
+  zh: "按会话展开的文件树：..."
 # 注意：不要写 npm: 键
 ```
 
-（`icon` 只收 GitHub 托管的**位图**，需要 180px PNG；本仓库暂时只有 `icon.svg`，可以先不放 `icon` 行，或自己导一张 180×180 PNG 放到 `assets/icon-180.png`。）
+（`icon` 只收 GitHub 托管的**位图**；本仓库的 `assets/icon-180.png` 就是 180px PNG。`description` 里出现 `": "` 必须加引号，否则 YAML 会解析成嵌套键。）
 
 PR 规则：每 PR 最多 3 条、描述必须准确（维护者会读代码核对）、只允许新增那一个 YAML 文件。合并后站点与 dshmarket 次日自动收录。
 可选：本地重载市场插件，用 `DSHM_REGISTRY_URL` 指向自建镜像做验证。
+
+### 已提交的 PR
+
+- **#14760** — https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/14760 （2026-11-13 提交，CI 跑 `check`，合并后次日进入 `plugins.json`）
+  - 分支在 fork `Xzl21/awesome-dsh-plugin` 的 `add-session-files`；后续要改条目，改 fork 分支上的同一个文件即可，PR 会自动更新。
+  - 因为本机 `git push` 到 github.com 会被重置，Fork/建分支/写文件/开 PR 全部走 REST API（`api.github.com` 可达）。
+
 
 ## 6. 后续发版
 
 1. 改代码 + 测试全绿。
 2. `CHANGELOG.md` 加条目，`package.json` 升版本（语义化）。
-3. `git commit && git tag vA.B.C && git push && git push --tags`。
-4. 重新打 tarball 挂 Release（文件名不带版本号，覆盖同一个 asset 名）。
-5. 目录条目不需要再改（url 不变，站点自己刷新版本/star）。
+3. `node tools/publish.mjs Xzl21/dsh-session-files --tag vA.B.C`（本机只能走 REST API；换一台能 `git push` 的机器则用 `git push && git push --tags`）。
+4. 打 tarball 挂到新 Release，**asset 名固定为 `dsh-session-files.tgz`**（覆盖式命名，条目里的 `latest/download/` 才不会 404）：
+
+   ```powershell
+   $NODE="C:/Users/xzl/AppData/Local/Programs/DSH NEXT/resources/runtime/x64/primary-runtime/dependencies/node/bin/node.exe"
+   $PNPM="C:/Users/xzl/AppData/Local/Programs/DSH NEXT/resources/runtime/x64/primary-runtime/dependencies/pnpm/bin/pnpm.cjs"
+   & $NODE $PNPM pack --pack-destination .push
+   # 把 .push\dsh-session-files-A.B.C.tgz 作为 asset 名 dsh-session-files.tgz 上传到该 Release
+   ```
+5. 目录条目不需要再改（`url` 与 `tarball` 都不变，站点自己刷新版本/star）。
+6. 本地装的是当前 profile 的 junction 安装，改完源码**重启 DSH**即可生效，不需要重新 `install_bundle`。
+
+### 发布记录
+
+| 版本 | 日期 | 发布内容 |
+| --- | --- | --- |
+| 0.1.4 | 2026-11-13 | 回收站面板 + 可选保留期自动清理；Release `v0.1.4`（asset `dsh-session-files.tgz`）；目录 PR #14760 |
+| 0.1.3 | 2026-11-12 | 打开所在文件夹、预览错误提示更诚实 |
+| 0.1.2 | 2026-11-12 | 清理前磁盘核对，消除「说有 178 个却清不动」 |
+| 0.1.1 | 2026-11-11 | 修误删项目文件（plumbing 白名单 + 分层判定） |
+| 0.1.0 | 2026-11-11 | 首个版本：会话文件树 + 四道分类 + 可恢复清理 |
+
 
 ## 7. 参考出处
 
