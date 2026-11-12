@@ -11,3 +11,4 @@ Thumbs.db
 preview/layout-*.json
 plugins/*/node_modules/
 .tmp-*.json
+.push/
