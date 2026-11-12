@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)；版本号与 `package.json` 同步。
 
+## [0.1.4] - 2026-11-13
+
+### 新增
+
+- **回收站面板**：树右上角新增「回收站」按钮。按批次列出历史上被清理的文件（时间 / 来源会话 / 文件数 / 体积，
+  可展开看清单），支持「恢复整批」与「删除整批」。恢复是**复制**，回收站里的原件保留，可以反复恢复；
+  目标位置已有同名文件时跳过而不是覆盖。
+- **自动清理（保留期）**：可选「关闭 / 7 天 / 30 天 / 90 天」，**默认关闭**。开启后，超过保留期的批次会在
+  插件启动、打开回收站、修改设置这三个时机被自动永久删除；关闭时永远不自动删。设置存在
+  `$DSH_HOME/session-files/config.json`。
+- 新增 host 路由：`GET /api/session-files/trash`、`POST /api/session-files/trash/restore`、
+  `POST /api/session-files/trash/empty`、`POST /api/session-files/config`。
+
+### 说明
+
+- 「删除整批」是插件里**唯一**真正删磁盘的操作（`fs.rm`），必须二次确认；`/trash/empty` 也要求显式给出
+  `batch` 或 `olderThanDays >= 1`，避免误触「全删」。
+- 之前「清理临时文件」的行为不变：仍然只移动到回收站，永不直接删除。
+
+### 工程
+
+- `CONTRACT.md` §6 增加 4 条路由、§7 增加回收站文案键、§10 增加 `config.json` 与保留期清扫语义。
+- `test/integration.real.mjs`、`test/client-layout.test.mjs` 增加回收站相关用例。
+
 ## [0.1.3] - 2026-11-12
 
 ### 新增

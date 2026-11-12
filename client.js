@@ -56,6 +56,8 @@ if (LOADER && typeof LOADER.load === 'function') {
       // Max backlog paths listed in the "not expanded" popover.
       const UNFOLD_PREVIEW = 20;
       const PREVIEW_MAX_BYTES = 65536;
+      // Auto-clean presets (CONTRACT §6 /config: 0 = off, integer 0-3650).
+      const TRASH_RETENTIONS = [0, 7, 30, 90];
 
       // ---------------------------------------------------------------------
       // copy (CONTRACT §7, zh default; extra keys are this file's own labels)
@@ -76,6 +78,8 @@ if (LOADER && typeof LOADER.load === 'function') {
           'action.reset': '恢复自动分类',
           'action.close': '关闭',
           'action.retry': '重试',
+          'action.expand': '展开',
+          'action.collapse': '收起',
           'confirm.delete': '把 {n} 个文件移到回收站？',
           'confirm.cleanup': '把 {n} 个临时文件移到回收站？',
           'confirm.cleanupAll': '将把 {n} 个临时文件移入回收站（其中 {m} 个未在树中）。继续？',
@@ -157,6 +161,25 @@ if (LOADER && typeof LOADER.load === 'function') {
           'reason.scanned-preexisting': '扫描发现，会话前已存在',
           'reason.scanned-new': '扫描发现，会话中新增',
           'reason.override': '手动分类',
+          'action.trash': '回收站',
+          'trash.title': '回收站',
+          'trash.empty': '回收站是空的',
+          'trash.retention': '自动清理',
+          'trash.retention.off': '关闭（不自动删除）',
+          'trash.batch': '批次',
+          'trash.size': '{n} 个文件 · {size}',
+          'trash.restoreBatch': '恢复整批',
+          'trash.emptyBatch': '删除整批',
+          'trash.restoreOne': '恢复',
+          'trash.keptHint': '恢复是复制，回收站里的原件会保留',
+          'trash.total': '共 {n} 个批次 · {files} 个文件 · {size}',
+          'trash.days': '{n} 天',
+          'trash.more': '还有更多条目（最多显示 500 个）',
+          'confirm.trashEmpty': '将永久删除 {n} 个文件（不可恢复）。继续？',
+          'confirm.retention': '之后清理时，超过 {n} 天的批次会被自动永久删除。继续？',
+          'toast.restored': '已恢复 {n} 个文件',
+          'toast.trashEmptied': '已永久删除 {n} 个文件（释放 {size}）',
+          'toast.retentionSaved': '自动清理：{n} 天',
         },
         en: {
           'title': 'Session file tree',
@@ -172,6 +195,8 @@ if (LOADER && typeof LOADER.load === 'function') {
           'action.reset': 'Auto',
           'action.close': 'Close',
           'action.retry': 'Retry',
+          'action.expand': 'Expand',
+          'action.collapse': 'Collapse',
           'confirm.delete': 'Move {n} files to trash?',
           'confirm.cleanup': 'Move {n} temp files to trash?',
           'confirm.cleanupAll': 'Move {n} temp files to trash ({m} of them not in the tree). Continue?',
@@ -253,6 +278,25 @@ if (LOADER && typeof LOADER.load === 'function') {
           'reason.scanned-preexisting': 'scanned, pre-existing',
           'reason.scanned-new': 'scanned, created in session',
           'reason.override': 'manual',
+          'action.trash': 'Trash',
+          'trash.title': 'Trash',
+          'trash.empty': 'Trash is empty',
+          'trash.retention': 'Auto-clean',
+          'trash.retention.off': 'Off (never delete)',
+          'trash.batch': 'Batch',
+          'trash.size': '{n} files · {size}',
+          'trash.restoreBatch': 'Restore batch',
+          'trash.emptyBatch': 'Delete batch',
+          'trash.restoreOne': 'Restore',
+          'trash.keptHint': 'Restoring copies; the trash keeps its copy',
+          'trash.total': '{n} batches · {files} files · {size}',
+          'trash.days': '{n} days',
+          'trash.more': 'More entries (500 shown max)',
+          'confirm.trashEmpty': 'Permanently delete {n} files? This cannot be undone',
+          'confirm.retention': 'Batches older than {n} days will be deleted automatically. Continue?',
+          'toast.restored': 'Restored {n} file(s)',
+          'toast.trashEmptied': 'Permanently deleted {n} file(s) ({size} freed)',
+          'toast.retentionSaved': 'Auto-clean: {n} days',
         },
       };
 
@@ -1005,6 +1049,26 @@ if (LOADER && typeof LOADER.load === 'function') {
 .sf-canvas-viewport::-webkit-scrollbar,.sf-drawer-body::-webkit-scrollbar,.sf-pre::-webkit-scrollbar{width:10px;height:10px;}
 .sf-canvas-viewport::-webkit-scrollbar-thumb,.sf-drawer-body::-webkit-scrollbar-thumb,.sf-pre::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l1,var(--sf-border));border-radius:999px;border:2px solid transparent;background-clip:content-box;}
 .sf-canvas-viewport::-webkit-scrollbar-thumb:hover,.sf-drawer-body::-webkit-scrollbar-thumb:hover,.sf-pre::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-scrollbar-hover-l2,var(--sf-border-strong));background-clip:content-box;}
+
+/* trash panel (0.1.4) */
+.sf-tbtn.on{background:var(--sf-accent);border-color:transparent;color:#fff;}
+.sf-trash-drawer{width:420px;}
+.sf-select{height:28px;max-width:100%;padding:0 6px;border:1px solid var(--sf-border);border-radius:var(--sf-radius-sm);background:var(--sf-bg);color:var(--sf-fg);font-family:inherit;font-size:12px;}
+.sf-select:focus{outline:none;border-color:var(--sf-accent);}
+.sf-batches{display:flex;flex-direction:column;gap:8px;min-height:0;}
+.sf-batch{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--sf-border);border-radius:var(--sf-radius-sm);background:var(--sf-surface);}
+.sf-batch-head{display:flex;align-items:center;gap:6px;min-width:0;}
+.sf-batch-time{font-size:11.5px;color:var(--sf-fg2);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.sf-batch-meta{font-size:11px;color:var(--sf-fg4);}
+.sf-batch-acts{display:flex;flex-wrap:wrap;gap:6px;}
+.sf-batch-acts .sf-tbtn{height:24px;font-size:11px;}
+.sf-entries{list-style:none;margin:0;padding:4px 0 0;display:flex;flex-direction:column;gap:2px;max-height:200px;overflow:auto;border-top:1px dashed var(--sf-border);}
+.sf-entry-row{display:flex;align-items:center;gap:6px;min-width:0;}
+.sf-entry{flex:1;min-width:0;font-family:var(--sf-mono);font-size:10.5px;color:var(--sf-fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sf-entry-size{flex:none;font-family:var(--sf-mono);font-size:10px;color:var(--sf-fg4);}
+.sf-entry-row .sf-mini{flex:none;margin-left:0;}
+.sf-entry-more{font-family:var(--sf-mono);font-size:10.5px;color:var(--sf-fg4);padding:2px 0;}
+.sf-trash-total{padding-top:8px;border-top:1px solid var(--sf-border);font-size:11.5px;color:var(--sf-fg2);}
 `;
 
       // ---------------------------------------------------------------------
@@ -1603,6 +1667,341 @@ if (LOADER && typeof LOADER.load === 'function') {
         return out;
       }
 
+      // ---------------------------------------------------------------------
+      // trash (CONTRACT §6 /trash, 0.1.4)
+      // ---------------------------------------------------------------------
+
+      function numberOr(value, fallback) {
+        const n = Number(value);
+        return isFinite(n) ? n : fallback;
+      }
+
+      function normalizeBatch(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        const id = typeof raw.id === 'string' ? raw.id : '';
+        if (!id) return null;
+        const entries = [];
+        if (Array.isArray(raw.entries)) {
+          for (let i = 0; i < raw.entries.length; i++) {
+            const entry = raw.entries[i];
+            if (!entry || typeof entry.path !== 'string' || !entry.path) continue;
+            entries.push({ path: entry.path, size: Math.max(0, numberOr(entry.size, 0)) });
+          }
+        }
+        return {
+          id: id,
+          ownerSessionId: typeof raw.ownerSessionId === 'string' ? raw.ownerSessionId : '',
+          createdAt: numberOr(raw.createdAt, 0),
+          files: Math.max(0, Math.floor(numberOr(raw.files, entries.length))),
+          bytes: Math.max(0, Math.floor(numberOr(raw.bytes, 0))),
+          entries: entries,
+          truncated: raw.truncated === true,
+        };
+      }
+
+      function normalizeTrash(body) {
+        const src = body && typeof body === 'object' ? body : {};
+        const batches = [];
+        if (Array.isArray(src.batches)) {
+          for (let i = 0; i < src.batches.length; i++) {
+            const batch = normalizeBatch(src.batches[i]);
+            if (batch) batches.push(batch);
+          }
+        }
+        const config = src.config && typeof src.config === 'object' ? src.config : {};
+        const totals = src.totals && typeof src.totals === 'object' ? src.totals : {};
+        return {
+          config: {
+            trashRetentionDays: Math.max(0, Math.floor(numberOr(config.trashRetentionDays, 0))),
+          },
+          batches: batches,
+          totals: {
+            batches: Math.max(0, Math.floor(numberOr(totals.batches, batches.length))),
+            files: Math.max(0, Math.floor(numberOr(totals.files, 0))),
+            bytes: Math.max(0, Math.floor(numberOr(totals.bytes, 0))),
+          },
+        };
+      }
+
+      // Trash panel: a second drawer inside the overlay body, sharing the
+      // DetailDrawer visual language. Never a second overlay.
+      function TrashDrawer(props) {
+        useLang();
+        const lang = getLang();
+        const state = props.state || {};
+        const config = state.config && typeof state.config === 'object' ? state.config : {};
+        const totals = state.totals && typeof state.totals === 'object' ? state.totals : {};
+        const batches = Array.isArray(state.batches) ? state.batches : [];
+        const status = state.status || 'loading';
+        const retention = Math.max(0, Math.floor(numberOr(config.trashRetentionDays, 0)));
+
+        const [pending, setPending] = useState(null);
+        const [opError, setOpError] = useState(null);
+        const [expanded, setExpanded] = useState({});
+
+        function toggleExpanded(batchId) {
+          setExpanded(function (prev) {
+            const next = Object.assign({}, prev);
+            if (next[batchId]) delete next[batchId];
+            else next[batchId] = true;
+            return next;
+          });
+        }
+
+        function runRestore(batch, paths) {
+          if (pending) return;
+          const key = 'restore:' + batch.id;
+          setPending(key);
+          setOpError(null);
+          const promise = props.onRestore(batch.id, paths);
+          if (!promise || typeof promise.then !== 'function') {
+            setPending(null);
+            return;
+          }
+          promise.then(
+            function () { setPending(null); },
+            function (error) { setPending(null); setOpError(errCode(error)); }
+          );
+        }
+
+        function runEmpty(batch) {
+          if (pending) return;
+          if (!confirmFn(t('confirm.trashEmpty', { n: batch.files }))) return;
+          const key = 'empty:' + batch.id;
+          setPending(key);
+          setOpError(null);
+          const promise = props.onEmpty(batch.id, batch.files);
+          if (!promise || typeof promise.then !== 'function') {
+            setPending(null);
+            return;
+          }
+          promise.then(
+            function () { setPending(null); },
+            function (error) { setPending(null); setOpError(errCode(error)); }
+          );
+        }
+
+        function onRetentionChange(event) {
+          const raw = event && event.target ? event.target.value : '';
+          const days = parseInt(raw, 10);
+          if (!isFinite(days) || days < 0 || days === retention) return;
+          if (pending) return;
+          if (days > 0 && !confirmFn(t('confirm.retention', { n: days }))) return;
+          setPending('retention');
+          setOpError(null);
+          const promise = props.onRetention(days);
+          if (!promise || typeof promise.then !== 'function') {
+            setPending(null);
+            return;
+          }
+          promise.then(
+            function () { setPending(null); },
+            function (error) { setPending(null); setOpError(errCode(error)); }
+          );
+        }
+
+        const retentionOptions = TRASH_RETENTIONS.map(function (days) {
+          return h(
+            'option',
+            { key: 'ret-' + days, value: String(days) },
+            days === 0 ? t('trash.retention.off') : t('trash.days', { n: days })
+          );
+        });
+
+        let statusBlock = null;
+        if (status === 'loading') {
+          statusBlock = h(
+            'div',
+            { className: 'sf-status', key: 'trash-loading' },
+            h('div', { className: 'sf-spin' }),
+            h('div', null, t('loading'))
+          );
+        } else if (status === 'error') {
+          statusBlock = h(
+            'div',
+            { className: 'sf-status', key: 'trash-error' },
+            h('div', { className: 'sf-status-title' }, t('error.title')),
+            h('div', { className: 'sf-status-hint' }, t('error.network')),
+            state.code ? h('div', { className: 'sf-code' }, state.code) : null,
+            h(
+              'button',
+              { type: 'button', className: 'sf-tbtn', onClick: props.onRefresh },
+              t('action.retry')
+            )
+          );
+        } else if (batches.length === 0) {
+          statusBlock = h(
+            'div',
+            { className: 'sf-status', key: 'trash-empty' },
+            h('div', { className: 'sf-status-title' }, t('trash.empty'))
+          );
+        }
+
+        const cards = batches.map(function (batch) {
+          const open = !!expanded[batch.id];
+          const restoring = pending === 'restore:' + batch.id;
+          const emptying = pending === 'empty:' + batch.id;
+          const entries = batch.entries.map(function (entry, index) {
+            return h(
+              'li',
+              { className: 'sf-entry-row', key: 'e-' + index },
+              h('span', { className: 'sf-entry', title: entry.path }, entry.path),
+              h('span', { className: 'sf-entry-size' }, fmtSize(entry.size)),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'sf-mini',
+                  title: t('trash.restoreOne'),
+                  disabled: !!pending,
+                  onClick: function () { runRestore(batch, [entry.path]); },
+                },
+                t('trash.restoreOne')
+              )
+            );
+          });
+          return h(
+            'div',
+            { className: 'sf-batch', key: batch.id },
+            h(
+              'div',
+              { className: 'sf-batch-head' },
+              h('span', { className: 'sf-batch-time' }, fmtDateTime(batch.createdAt, lang)),
+              h(
+                'span',
+                { className: 'sf-chip mono', title: batch.ownerSessionId },
+                String(batch.ownerSessionId || '').slice(0, 8)
+              ),
+              h('span', { className: 'sf-spacer' }),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'sf-mini',
+                  title: open ? t('action.collapse') : t('action.expand'),
+                  'aria-expanded': open ? 'true' : 'false',
+                  onClick: function () { toggleExpanded(batch.id); },
+                },
+                open ? '▾' : '▸'
+              )
+            ),
+            h('div', { className: 'sf-batch-meta' }, t('trash.size', { n: batch.files, size: fmtSize(batch.bytes) })),
+            open
+              ? h(
+                  'ul',
+                  { className: 'sf-entries' },
+                  entries,
+                  batch.truncated
+                    ? h('li', { className: 'sf-entry-more', key: 'more', title: t('trash.more') }, '…')
+                    : null
+                )
+              : null,
+            h(
+              'div',
+              { className: 'sf-batch-acts' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'sf-tbtn',
+                  disabled: !!pending,
+                  onClick: function () { runRestore(batch, null); },
+                },
+                restoring ? '…' : t('trash.restoreBatch')
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'sf-tbtn danger',
+                  disabled: !!pending,
+                  onClick: function () { runEmpty(batch); },
+                },
+                emptying ? '…' : t('trash.emptyBatch')
+              )
+            )
+          );
+        });
+
+        return h(
+          'aside',
+          { className: 'sf-drawer sf-trash-drawer', 'aria-label': t('trash.title') },
+          h(
+            'div',
+            { className: 'sf-drawer-head' },
+            h(
+              'div',
+              { className: 'sf-drawer-title' },
+              h('div', { className: 'sf-dt-name' }, t('trash.title')),
+              h('div', { className: 'sf-dt-path' }, t('trash.keptHint'))
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'sf-tbtn',
+                title: t('action.refresh'),
+                disabled: status === 'loading',
+                onClick: props.onRefresh,
+              },
+              t('action.refresh')
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'sf-tbtn icon',
+                title: t('action.close'),
+                'aria-label': t('action.close'),
+                onClick: props.onClose,
+              },
+              '×'
+            )
+          ),
+          h(
+            'div',
+            { className: 'sf-drawer-body' },
+            h(
+              'div',
+              { className: 'sf-field' },
+              h('div', { className: 'sf-field-label' }, t('trash.retention')),
+              h(
+                'select',
+                {
+                  className: 'sf-select',
+                  value: String(retention),
+                  disabled: !!pending,
+                  onChange: onRetentionChange,
+                },
+                retentionOptions
+              )
+            ),
+            h('div', { className: 'sf-hint' }, t('trash.keptHint')),
+            statusBlock,
+            cards.length > 0 ? h('div', { className: 'sf-batches' }, cards) : null,
+            status === 'ready' && batches.length > 0
+              ? h(
+                  'div',
+                  { className: 'sf-trash-total' },
+                  t('trash.total', {
+                    n: numberOr(totals.batches, batches.length),
+                    files: numberOr(totals.files, 0),
+                    size: fmtSize(numberOr(totals.bytes, 0)),
+                  })
+                )
+              : null,
+            opError
+              ? h(
+                  'div',
+                  { className: 'sf-errorline' },
+                  t('error.op'),
+                  h('span', { className: 'sf-code' }, opError)
+                )
+              : null
+          )
+        );
+      }
+
       function SessionFilesPanel(props) {
         useLang();
         const sessionId = props.sessionId;
@@ -1614,8 +2013,17 @@ if (LOADER && typeof LOADER.load === 'function') {
         const [toast, setToast] = useState(null);
         const [busy, setBusy] = useState(false);
         const [unfoldOpen, setUnfoldOpen] = useState(false);
+        const [trashOpen, setTrashOpen] = useState(false);
+        const [trashState, setTrashState] = useState({
+          status: 'idle',
+          config: { trashRetentionDays: 0 },
+          batches: [],
+          totals: { batches: 0, files: 0, bytes: 0 },
+          code: null,
+        });
 
         const reqRef = useRef(0);
+        const trashReqRef = useRef(0);
         const ledgerRef = useRef(null);
         const toastTimer = useRef(null);
         const scrollRef = useRef(null);
@@ -1682,7 +2090,7 @@ if (LOADER && typeof LOADER.load === 'function') {
           [load],
         );
 
-        // Esc: close the drawer first, then the overlay.
+        // Esc: close the trash panel first, then the drawer, then the overlay.
         useEffect(
           function () {
             function onKeyDown(event) {
@@ -1690,7 +2098,9 @@ if (LOADER && typeof LOADER.load === 'function') {
               const key = event.key || '';
               if (key !== 'Escape' && key !== 'Esc' && event.keyCode !== 27) return;
               if (event.isComposing) return;
-              if (unfoldOpen) {
+              if (trashOpen) {
+                setTrashOpen(false);
+              } else if (unfoldOpen) {
                 setUnfoldOpen(false);
               } else if (selectedId) {
                 setSelectedId(null);
@@ -1703,7 +2113,7 @@ if (LOADER && typeof LOADER.load === 'function') {
               window.removeEventListener('keydown', onKeyDown, true);
             };
           },
-          [selectedId, unfoldOpen],
+          [selectedId, unfoldOpen, trashOpen],
         );
 
         // New session: back to the top-left of the canvas.
@@ -1761,6 +2171,102 @@ if (LOADER && typeof LOADER.load === 'function') {
             return apiPost('/reveal', { sessionId: sessionId, path: path });
           },
           [sessionId],
+        );
+
+        // ---- trash (CONTRACT §6, 0.1.4) -----------------------------------
+
+        const loadTrash = useCallback(
+          function () {
+            const rid = trashReqRef.current + 1;
+            trashReqRef.current = rid;
+            setTrashState(function (prev) {
+              return Object.assign({}, prev, { status: 'loading', code: null });
+            });
+            return apiGet('/trash', { sessionId: sessionId, scope: 'all' })
+              .then(function (body) {
+                if (trashReqRef.current !== rid) return null;
+                const next = normalizeTrash(body);
+                setTrashState({
+                  status: 'ready',
+                  config: next.config,
+                  batches: next.batches,
+                  totals: next.totals,
+                  code: null,
+                });
+                return next;
+              })
+              .catch(function (error) {
+                if (trashReqRef.current !== rid) return null;
+                const code = errCode(error);
+                setTrashState(function (prev) {
+                  return Object.assign({}, prev, { status: 'error', code: code });
+                });
+                return null;
+              });
+          },
+          [sessionId],
+        );
+
+        const toggleTrash = function () {
+          const next = !trashOpen;
+          setTrashOpen(next);
+          if (next) {
+            // One drawer at a time: the trash takes the DetailDrawer's slot.
+            setSelectedId(null);
+            loadTrash();
+          }
+        };
+
+        const restoreBatch = useCallback(
+          function (batchId, paths) {
+            const payload = { sessionId: sessionId, batch: batchId };
+            if (Array.isArray(paths) && paths.length > 0) payload.paths = paths;
+            return apiPost('/trash/restore', payload).then(function (body) {
+              const result = body || {};
+              if (result.ledger) applyLedger(result.ledger);
+              else load();
+              const restored = Array.isArray(result.restored) ? result.restored.length : 0;
+              const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0;
+              let text = t('toast.restored', { n: restored });
+              if (skipped > 0) text += ' · ' + t('toast.skipped', { n: skipped });
+              showToast(text, null, skipped > 0 ? 'info' : null);
+              loadTrash();
+              return result;
+            });
+          },
+          [sessionId, applyLedger, load, loadTrash, showToast],
+        );
+
+        const emptyBatch = useCallback(
+          function (batchId, files) {
+            return apiPost('/trash/empty', { sessionId: sessionId, batch: batchId }).then(function (body) {
+              const result = body || {};
+              const totals = result.totals && typeof result.totals === 'object' ? result.totals : {};
+              const n = numberOr(totals.files, files);
+              const bytes = Math.max(0, numberOr(totals.bytes, 0));
+              showToast(t('toast.trashEmptied', { n: n, size: fmtSize(bytes) }));
+              loadTrash();
+              return result;
+            });
+          },
+          [sessionId, loadTrash, showToast],
+        );
+
+        const saveRetention = useCallback(
+          function (days) {
+            return apiPost('/config', { sessionId: sessionId, trashRetentionDays: days }).then(function (body) {
+              const result = body || {};
+              const config = result.config && typeof result.config === 'object' ? result.config : null;
+              const saved = Math.max(0, Math.floor(numberOr(config ? config.trashRetentionDays : days, days)));
+              setTrashState(function (prev) {
+                return Object.assign({}, prev, { config: { trashRetentionDays: saved } });
+              });
+              showToast(saved > 0 ? t('toast.retentionSaved', { n: saved }) : t('trash.retention.off'));
+              loadTrash();
+              return result;
+            });
+          },
+          [sessionId, loadTrash, showToast],
         );
 
         const onCleanup = useCallback(
@@ -1991,6 +2497,17 @@ if (LOADER && typeof LOADER.load === 'function') {
           { className: 'sf-header' },
           h('div', { className: 'sf-title' }, t('title')),
           h('div', { className: 'sf-spacer' }),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'sf-tbtn sf-trash-btn' + (trashOpen ? ' on' : ''),
+              title: t('action.trash'),
+              'aria-pressed': trashOpen ? 'true' : 'false',
+              onClick: toggleTrash,
+            },
+            t('action.trash'),
+          ),
           h(
             'button',
             { type: 'button', className: 'sf-tbtn', disabled: isLoading, onClick: load },
@@ -2385,6 +2902,19 @@ if (LOADER && typeof LOADER.load === 'function') {
               'div',
               { className: 'sf-body' },
               bodyContent,
+              trashOpen
+                ? h(TrashDrawer, {
+                    key: 'trash',
+                    state: trashState,
+                    onClose: function () {
+                      setTrashOpen(false);
+                    },
+                    onRefresh: loadTrash,
+                    onRestore: restoreBatch,
+                    onEmpty: emptyBatch,
+                    onRetention: saveRetention,
+                  })
+                : null,
               selectedNode
                 ? h(DetailDrawer, {
                     key: 'drawer',
@@ -2532,6 +3062,9 @@ if (LOADER && typeof LOADER.load === 'function') {
           collectBacklog: collectBacklog,
           unionPaths: unionPaths,
           UNFOLD_PREVIEW: UNFOLD_PREVIEW,
+          normalizeBatch: normalizeBatch,
+          normalizeTrash: normalizeTrash,
+          TRASH_RETENTIONS: TRASH_RETENTIONS,
         },
       };
     },

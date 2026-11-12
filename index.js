@@ -1,8 +1,9 @@
 // dsh-session-files - host half.
 //
 // Provides:
-//   1. an HTTP API under `/api/session-files` (ledger / classify / delete / preview)
-//      consumed by the browser half in ./client.js,
+//   1. an HTTP API under `/api/session-files` (ledger / classify / delete / preview /
+//      reveal / trash / trash restore / trash empty / config), consumed by the
+//      browser half in ./client.js,
 //   2. the `session_files` agent tool (list / classify / cleanup),
 //   3. a short system-prompt section that teaches the model the cleanup ritual.
 //
@@ -19,15 +20,21 @@ import { readSessionLog } from './host/logreader.mjs';
 import {
   CLASSES,
   dshHome,
+  emptyTrash,
   isInside,
+  listTrash,
   normalizeRelPath,
   previewFile,
+  readConfig,
   readGone,
   readOverrides,
   resolveWorkspacePath,
+  restoreTrashBatch,
   setOverride,
+  sweepTrashOlderThan,
   trashFiles,
   updateGone,
+  writeConfig,
 } from './host/store.mjs';
 
 export const name = 'dsh-session-files';
@@ -54,6 +61,8 @@ const MAX_SCAN_DEPTH = 6;
 const MAX_SCAN_ENTRIES = MAX_SCAN_FILES * 8;
 const SCAN_CONCURRENCY = 8;
 const PREVIEW_DEFAULT_BYTES = 65536;
+// Retention is an integer number of days; 0 means "never sweep" (contract section 10).
+const RETENTION_DAYS_MAX = 3650;
 
 const TOOL_NAME = 'session_files';
 const LIST_ROW_BUDGET = 108;
@@ -63,9 +72,32 @@ const LIST_ROW_BUDGET = 108;
 function warn(ctx, message, error) {
   try {
     const detail = error ? `: ${String((error && error.message) || error)}` : '';
-    if (ctx && ctx.logger && typeof ctx.logger.warn === 'function') ctx.logger.warn(`[dsh-session-files] ${message}${detail}`);
+    const line = `[dsh-session-files] ${message}${detail}`;
+    if (ctx && ctx.logger && typeof ctx.logger.warn === 'function') {
+      ctx.logger.warn(line);
+      return;
+    }
+    // Background work (the retention sweep) may run without a request logger.
+    console.warn(line);
   } catch {
     // logging must never break a request path
+  }
+}
+
+/**
+ * Best-effort retention sweep (contract section 10): read the config and delete
+ * expired trash batches. Used after activation and by `GET /trash`; it never
+ * throws, so a broken trash directory cannot fail a request.
+ */
+async function sweepTrashBestEffort(ctx) {
+  const empty = { removed: [], totals: { files: 0, bytes: 0 } };
+  try {
+    const config = await readConfig();
+    if (!(config.trashRetentionDays > 0)) return empty;
+    return await sweepTrashOlderThan(config.trashRetentionDays);
+  } catch (error) {
+    warn(ctx, 'trash retention sweep failed', error);
+    return empty;
   }
 }
 
@@ -890,7 +922,83 @@ function createMethods(ctx) {
     return { ok: true, path: rel, exists: info !== null, isDirectory: targetIsDir };
   }
 
-  return { buildLedgerFor, classifyFor, classifyManyFor, deleteFor, previewFor, revealFor };
+  /**
+   * List trash batches (contract section 6). Every call first runs the retention
+   * sweep so the answer reflects what the user configured.
+   */
+  async function listTrashFor(sessionId, scope) {
+    await sweepTrashBestEffort(ctx);
+    let config;
+    try {
+      config = await readConfig();
+    } catch {
+      config = { version: 1, trashRetentionDays: 0 };
+    }
+    try {
+      const listed = await listTrash({ scope, sessionId });
+      return { ok: true, config, batches: listed.batches, totals: listed.totals };
+    } catch (error) {
+      return { ok: false, code: 'trash-failed', status: 500, params: { message: String((error && error.message) || error) } };
+    }
+  }
+
+  /** Copy a trash batch (or part of it) back into the requesting session's workspace. */
+  async function restoreTrashFor(sessionId, batch, paths) {
+    if (typeof batch !== 'string' || batch.trim().length === 0) return { ok: false, code: 'bad-batch', status: 400 };
+    const loaded = await loadSession(ctx, sessionId);
+    if (!loaded.ok) return loaded;
+    const workspacePath = workspacePathOf(ctx, loaded.session, loaded.header);
+    if (!workspacePath) return { ok: false, code: 'no-workspace', status: 404 };
+    let restored;
+    try {
+      restored = await restoreTrashBatch({ batch, targetWorkspacePath: workspacePath, sessionId, paths });
+    } catch (error) {
+      const code = error && error.code;
+      if (code === 'bad-batch') return { ok: false, code: 'bad-batch', status: 400 };
+      if (code === 'batch-not-found') return { ok: false, code: 'batch-not-found', status: 404 };
+      if (code === 'bad-path') return { ok: false, code: 'bad-path', status: 400 };
+      return { ok: false, code: 'restore-failed', status: 500, params: { message: String((error && error.message) || error) } };
+    }
+    const rebuilt = await buildLedgerFor(sessionId);
+    if (!rebuilt.ok) return rebuilt;
+    return { ok: true, restored: restored.restored, skipped: restored.skipped, ledger: rebuilt.ledger };
+  }
+
+  /** Really delete trash batches (`/trash/empty`, contract section 6). */
+  async function emptyTrashFor(batch, olderThanDays, dryRun) {
+    let result;
+    try {
+      result = await emptyTrash({ batch, olderThanDays, dryRun });
+    } catch (error) {
+      const code = error && error.code;
+      if (code === 'empty-scope-required') return { ok: false, code: 'empty-scope-required', status: 400 };
+      if (code === 'bad-batch') return { ok: false, code: 'bad-batch', status: 400 };
+      if (code === 'batch-not-found') return { ok: false, code: 'batch-not-found', status: 404 };
+      return { ok: false, code: 'trash-empty-failed', status: 500, params: { message: String((error && error.message) || error) } };
+    }
+    return { ok: true, removed: result.removed, totals: result.totals, dryRun: dryRun === true };
+  }
+
+  /** Persist the retention setting and sweep with the new value (contract section 10). */
+  async function configFor(trashRetentionDays) {
+    let saved;
+    try {
+      saved = await writeConfig({ trashRetentionDays });
+    } catch (error) {
+      const code = error && error.code;
+      if (code === 'bad-retention') return { ok: false, code: 'bad-retention', status: 400 };
+      return { ok: false, code: 'config-failed', status: 500, params: { message: String((error && error.message) || error) } };
+    }
+    let swept = { removed: [], totals: { files: 0, bytes: 0 } };
+    try {
+      swept = await sweepTrashOlderThan(saved.trashRetentionDays);
+    } catch (error) {
+      warn(ctx, 'trash retention sweep failed', error);
+    }
+    return { ok: true, config: saved, swept: swept.removed, totals: swept.totals };
+  }
+
+  return { buildLedgerFor, classifyFor, classifyManyFor, deleteFor, listTrashFor, restoreTrashFor, emptyTrashFor, configFor, previewFor, revealFor };
 }
 
 /**
@@ -1030,7 +1138,94 @@ function createHandlers(methods) {
     return json(res, 200, { ok: true, path: result.path, exists: result.exists === true });
   };
 
-  return { handleLedger, handleClassify, handleDelete, handlePreview, handleReveal };
+  const handleTrash = async (ctx, req, res) => {
+    if (requestRejection(req) !== 0) return json(res, 403, fail('forbidden'));
+    if (req.method !== 'GET') return methodNotAllowed(res, 'GET');
+    const url = parseRequestUrl(req);
+    const sessionId = pickSessionId(url ? url.searchParams.get('sessionId') : '');
+    if (!sessionId) return json(res, 400, fail('bad-session-id'));
+    const rawScope = url ? url.searchParams.get('scope') : null;
+    const scope = rawScope === null || rawScope.trim().length === 0 ? 'all' : rawScope.trim();
+    if (scope !== 'all' && scope !== 'session') return json(res, 400, fail('bad-scope'));
+    const result = await methods.listTrashFor(sessionId, scope);
+    if (!result.ok) return json(res, result.status || 500, fail(result.code, result.params));
+    return json(res, 200, {
+      ok: true,
+      config: { trashRetentionDays: result.config.trashRetentionDays },
+      batches: result.batches,
+      totals: result.totals,
+    });
+  };
+
+  const handleTrashRestore = async (ctx, req, res) => {
+    if (requestRejection(req) !== 0) return json(res, 403, fail('forbidden'));
+    if (req.method !== 'POST') return methodNotAllowed(res, 'POST');
+    const body = await readBody(req);
+    if (body.error === 'body-too-large') return json(res, 413, fail('body-too-large'));
+    if (body.error) return json(res, 400, fail(body.error));
+    const value = body.value || {};
+    const sessionId = pickSessionId(value.sessionId);
+    if (!sessionId) return json(res, 400, fail('bad-session-id'));
+    const batch = value.batch;
+    if (typeof batch !== 'string' || batch.trim().length === 0) return json(res, 400, fail('bad-batch'));
+    if (value.paths !== undefined && !Array.isArray(value.paths)) return json(res, 400, fail('bad-path'));
+    const result = await methods.restoreTrashFor(sessionId, batch, value.paths);
+    if (!result.ok) return json(res, result.status || 500, fail(result.code, result.params));
+    return json(res, 200, { ok: true, restored: result.restored, skipped: result.skipped, ledger: result.ledger });
+  };
+
+  const handleTrashEmpty = async (ctx, req, res) => {
+    if (requestRejection(req) !== 0) return json(res, 403, fail('forbidden'));
+    if (req.method !== 'POST') return methodNotAllowed(res, 'POST');
+    const body = await readBody(req);
+    if (body.error === 'body-too-large') return json(res, 413, fail('body-too-large'));
+    if (body.error) return json(res, 400, fail(body.error));
+    const value = body.value || {};
+    const sessionId = pickSessionId(value.sessionId);
+    if (!sessionId) return json(res, 400, fail('bad-session-id'));
+    const hasBatch = value.batch !== undefined && value.batch !== null && value.batch !== '';
+    if (hasBatch && typeof value.batch !== 'string') return json(res, 400, fail('bad-batch'));
+    let olderThanDays;
+    let hasDays = false;
+    if (value.olderThanDays !== undefined && value.olderThanDays !== null) {
+      const parsed = Number(value.olderThanDays);
+      if (!Number.isFinite(parsed) || parsed < 1) return json(res, 400, fail('empty-scope-required'));
+      olderThanDays = parsed;
+      hasDays = true;
+    }
+    if (!hasBatch && !hasDays) return json(res, 400, fail('empty-scope-required'));
+    if (value.dryRun !== undefined && typeof value.dryRun !== 'boolean') return json(res, 400, fail('bad-dry-run'));
+    const result = await methods.emptyTrashFor(hasBatch ? value.batch : undefined, olderThanDays, value.dryRun === true);
+    if (!result.ok) return json(res, result.status || 500, fail(result.code, result.params));
+    const payload = { ok: true, removed: result.removed, totals: result.totals };
+    if (result.dryRun === true) payload.dryRun = true;
+    return json(res, 200, payload);
+  };
+
+  const handleConfig = async (ctx, req, res) => {
+    if (requestRejection(req) !== 0) return json(res, 403, fail('forbidden'));
+    if (req.method !== 'POST') return methodNotAllowed(res, 'POST');
+    const body = await readBody(req);
+    if (body.error === 'body-too-large') return json(res, 413, fail('body-too-large'));
+    if (body.error) return json(res, 400, fail(body.error));
+    const value = body.value || {};
+    const sessionId = pickSessionId(value.sessionId);
+    if (!sessionId) return json(res, 400, fail('bad-session-id'));
+    const retention = value.trashRetentionDays;
+    if (!Number.isInteger(retention) || retention < 0 || retention > RETENTION_DAYS_MAX) {
+      return json(res, 400, fail('bad-retention'));
+    }
+    const result = await methods.configFor(retention);
+    if (!result.ok) return json(res, result.status || 500, fail(result.code, result.params));
+    return json(res, 200, {
+      ok: true,
+      config: { trashRetentionDays: result.config.trashRetentionDays },
+      swept: result.swept,
+      totals: result.totals,
+    });
+  };
+
+  return { handleLedger, handleClassify, handleDelete, handlePreview, handleReveal, handleTrash, handleTrashRestore, handleTrashEmpty, handleConfig };
 }
 
 function registerRoutes(ctx, methods) {
@@ -1046,6 +1241,11 @@ function registerRoutes(ctx, methods) {
     { path: `${ROUTE_PREFIX}/delete`, handler: handlers.handleDelete },
     { path: `${ROUTE_PREFIX}/preview`, handler: handlers.handlePreview },
     { path: `${ROUTE_PREFIX}/reveal`, handler: handlers.handleReveal },
+    // Contract section 6: trash browser, restore, real deletion and retention config.
+    { path: `${ROUTE_PREFIX}/trash`, handler: handlers.handleTrash },
+    { path: `${ROUTE_PREFIX}/trash/restore`, handler: handlers.handleTrashRestore },
+    { path: `${ROUTE_PREFIX}/trash/empty`, handler: handlers.handleTrashEmpty },
+    { path: `${ROUTE_PREFIX}/config`, handler: handlers.handleConfig },
   ];
   for (const route of routes) {
     runEffect(ctx, () =>
@@ -1394,5 +1594,12 @@ export function apply(ctx) {
     registerPrompt(ctx);
   } catch (error) {
     warn(ctx, 'failed to register system prompt section', error);
+  }
+  // Contract section 10: sweep expired trash once after activation. Fire-and-forget so a
+  // slow disk never delays plugin loading; sweepTrashBestEffort logs and swallows failures.
+  try {
+    void sweepTrashBestEffort(ctx);
+  } catch (error) {
+    warn(ctx, 'trash retention sweep failed', error);
   }
 }

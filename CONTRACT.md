@@ -30,7 +30,7 @@ locale/zh.json        Lead（已写好）
 icon.svg              Lead
 CONTRACT.md           Lead（本文件）
 host/ledger.mjs       A（纯函数，禁止 import node:fs / node:path 之外的东西；不许碰 ctx）
-host/store.mjs        C（fs 持久化：分类覆盖 + 备注 + 回收站）
+host/store.mjs        C（fs 持久化：分类覆盖 + 备注 + 回收站 + 回收站列表/恢复/清空 + config）
 index.js              C（host 接线：HTTP 路由 / agent 工具 / 系统提示词 / 会话数据加载）
 client.js             B（UI：按钮 + 全屏树）
 test/ledger.test.mjs  A（node 直接跑的单测，无框架）
@@ -311,6 +311,37 @@ body `{ sessionId, path }`
 - **`binary` 恒带**（文本时为 `false`）。
 - 二进制（含 NUL 或非 UTF-8 解码失败）→ `{ ok:true, path, text:"", binary:true, bytes }`
 
+### GET `/api/session-files/trash?sessionId=<id>&scope=all|session`
+→ `{ ok:true, config:{ trashRetentionDays:number }, batches:[Batch], totals:{ batches:number, files:number, bytes:number } }`
+- `Batch = { id, ownerSessionId, createdAt, files, bytes, entries:[{ path, size }], truncated }`
+  - `id` = `"<ownerSessionId>/<epochMs>"`（即回收站里的两级目录名，恢复/清空时原样回传）
+  - `createdAt` = `epochMs` 的数值形式；`files` / `bytes` 恒为该批次**整批真实值**
+  - `entries` 按 `path` 码点序，最多 500 条，超出时 `truncated:true`（只影响 entries 列表，不影响 files/bytes）
+- `scope` 默认 `all`（回收站是全局的，天然跨会话）；`scope=session` 只列 `ownerSessionId === sessionId` 的批次。
+- `sessionId` 仍需合法（请求身份），但回收站里没有该会话的批次不算错误。
+- 只读，不动磁盘；**每次请求顺带 best-effort 跑一次保留期清扫**（见 §10），清扫失败不影响本响应。
+
+### POST `/api/session-files/trash/restore`
+body `{ sessionId, batch: string, paths?: string[] }`
+→ `{ ok:true, restored:string[], skipped:[{ path, reason:'exists'|'bad-path'|'missing' }], ledger: Ledger }`
+- `batch` 为 `GET /trash` 返回的 `Batch.id`；省略 `paths` = 恢复整批。
+- 恢复到**请求方会话**的 workspace 根（不还原到原会话），按批次内相对路径落盘，父目录自动创建。
+- **绝不覆盖**：目标已存在 → `skipped reason:'exists'`；越界/绝对路径/`..` → `'bad-path'`；批次里没有该条目或源文件丢失 → `'missing'`。
+- 恢复是**复制**，回收站保留原样（可反复恢复）。
+- 失败：400 `bad-batch`、404 `batch-not-found`。
+
+### POST `/api/session-files/trash/empty`
+body `{ sessionId, batch?: string, olderThanDays?: number, dryRun?: boolean }`
+→ `{ ok:true, removed:[{ batch, files, bytes }], totals:{ files, bytes }, dryRun?:true }`
+- **这是插件里唯一真正删磁盘的接口**（`fs.rm` 批次目录）。必须给 `batch` 或 `olderThanDays >= 1` 之一，否则 400 `empty-scope-required`；`olderThanDays: 0` 视为非法（避免「全删」误触）。
+- `dryRun:true` 只返回将被删的批次与统计，不动磁盘。
+- 只删 `$DSH_HOME/session-files/trash/` 下、路径完全落在回收站根内的目录；不跟随 symlink。
+
+### POST `/api/session-files/config`
+body `{ sessionId, trashRetentionDays: number }`（整数 0–3650，`0` = 关闭自动清理）
+→ `{ ok:true, config:{ trashRetentionDays }, swept:[{ batch, files, bytes }], totals:{ files, bytes } }`
+- 写入后**立即**按新值跑一次清扫；`swept` 是本次真删的批次（`0` 时恒为空）。
+
 ## 7. 文案（B 用；zh 为默认）
 
 下表是**最小集合**：client.js 的 DICT 可以增补键（reason.*/edge.*/toast.*/stats.* 等），但必须 zh/en 同步；
@@ -334,6 +365,23 @@ body `{ sessionId, path }`
 | loading | 正在读取会话文件… | Reading session files… |
 | error.network | 读取失败：Host 半未生效或需要重启 DSH | Failed: host half not live (restart DSH?) |
 | note.ph | 备注… | Note… |
+| action.trash | 回收站 | Trash |
+| trash.title | 回收站 | Trash |
+| trash.empty | 回收站是空的 | Trash is empty |
+| trash.retention | 自动清理 | Auto-clean |
+| trash.retention.off | 关闭（不自动删除） | Off (never delete) |
+| trash.batch | 批次 | Batch |
+| trash.size | {n} 个文件 · {size} | {n} files · {size} |
+| trash.restoreBatch | 恢复整批 | Restore batch |
+| trash.emptyBatch | 删除整批 | Delete batch |
+| trash.restoreOne | 恢复 | Restore |
+| trash.keptHint | 恢复是复制，回收站里的原件会保留 | Restoring copies; the trash keeps its copy |
+| confirm.trashEmpty | 将永久删除 {n} 个文件（不可恢复）。继续？ | Permanently delete {n} files? This cannot be undone |
+| confirm.retention | 之后清理时，超过 {n} 天的批次会被自动永久删除。继续？ | Batches older than {n} days will be deleted automatically. Continue? |
+| toast.restored | 已恢复 {n} 个文件 | Restored {n} file(s) |
+| toast.trashEmptied | 已永久删除 {n} 个文件（释放 {size}） | Permanently deleted {n} file(s) ({size} freed) |
+| toast.retentionSaved | 自动清理：{n} 天 | Auto-clean: {n} days |
+| trash.total | 共 {n} 个批次 · {files} 个文件 · {size} | {n} batches · {files} files · {size} |
 
 ## 8. Agent 工具 `session_files`（C 实现，遵守 user-actions 规范：与 HTTP 路由共用同一批 Host 方法）
 
@@ -375,4 +423,10 @@ body `{ sessionId, path }`
   `{ "version": 1, "sessionId": "...", "paths": ["verify/dbg.py", "…"] }`（上限 20000 条，超出丢最旧的）
   语义：这些路径的旧 ledger 记录已被清理命令确认失效，重建 ledger 时不再展示；文件若重新出现并被记录，以新记录为准。
 - 写文件要原子（tmp 文件 + rename），并发写用串行队列；读失败一律降级为空。
+- 配置：`$DSH_HOME/session-files/config.json`
+  `{ "version": 1, "trashRetentionDays": 0 }`
+  缺文件 / 字段非法 / 读失败一律按 `trashRetentionDays = 0`（关闭）处理；写用原子写 + 串行队列。
+- **保留期清扫**（`trashRetentionDays > 0` 时生效）：在 ①插件 `apply` 完成后 ②`GET /trash` ③`POST /config`
+  三处 best-effort 执行——删除 `createdAt < now - days*86400000` 的**整批**回收站目录。
+  清扫是唯一会永久删除的操作，必须只在上述三个入口发生、而且失败只记 `console.warn`，绝不让请求失败。
 - **不要**把状态写到 workspace 里（那正是用户抱怨的污染源）。

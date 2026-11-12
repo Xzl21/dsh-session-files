@@ -12,7 +12,7 @@
 // created under os.tmpdir(), which are removed before the process exits.
 //
 // Exit code: 0 when every check passes, 1 otherwise.
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
@@ -221,6 +221,22 @@ function ledgerUrl(sessionId) {
   return `${ROUTE_PREFIX}/ledger?sessionId=${encodeURIComponent(sessionId)}`;
 }
 
+/** Poll `predicate` until it is truthy or `timeoutMs` elapses (background work). */
+async function waitFor(predicate, timeoutMs = 5000) {
+  const started = Date.now();
+  for (;;) {
+    let ok = false;
+    try {
+      ok = await predicate();
+    } catch {
+      ok = false;
+    }
+    if (ok) return true;
+    if (Date.now() - started >= timeoutMs) return false;
+    await new Promise((done) => setTimeout(done, 40));
+  }
+}
+
 // ----- ledger shape assertions (numbers stay data-driven) ------------------
 
 function distinctNodePaths(ledger) {
@@ -356,7 +372,18 @@ async function main() {
   const routes = [];
   const unmount = mountPlugin(routes);
   const server = await startServer(routes);
-  check('plugin registers five exact routes', routes.length === 5 && routes.every((route) => route.kind === 'exact' && typeof route.path === 'string'), routes.map((route) => route.path));
+  check('plugin registers nine exact routes', routes.length === 9 && routes.every((route) => route.kind === 'exact' && typeof route.path === 'string'), routes.map((route) => route.path));
+  const routePaths = new Set(routes.map((route) => route.path));
+  check(
+    'plugin registers the trash and config routes',
+    [
+      `${ROUTE_PREFIX}/trash`,
+      `${ROUTE_PREFIX}/trash/restore`,
+      `${ROUTE_PREFIX}/trash/empty`,
+      `${ROUTE_PREFIX}/config`,
+    ].every((pathname) => routePaths.has(pathname)),
+    [...routePaths],
+  );
 
   let exitCode = 0;
   try {
@@ -670,6 +697,215 @@ async function main() {
         rmSync(toolHome, { recursive: true, force: true });
         rmSync(toolWorkspace, { recursive: true, force: true });
       }
+    }
+    // ----- part D: trash browser, restore, empty and retention config -----
+    section('trash browser, restore, empty and retention config');
+    const trHome = mkdtempSync(join(tmpdir(), 'dsh-sf-trashhome-'));
+    const trWorkspace = mkdtempSync(join(tmpdir(), 'dsh-sf-trashws-'));
+    const trSessionId = `session-${randomUUID()}`;
+    const trashBase = join(trHome, 'session-files', 'trash');
+    const trashListUrl = (query) => `${ROUTE_PREFIX}/trash?sessionId=${encodeURIComponent(trSessionId)}${query || ''}`;
+    const probeRel = 'probe_trash.py';
+    const probeText = 'print("trash")\n';
+    const probeBytes = Buffer.byteLength(probeText);
+    try {
+      writeSyntheticSessionLog(trHome, trWorkspace, trSessionId);
+      writeFileSync(join(trWorkspace, probeRel), probeText);
+      process.env.DSH_HOME = trHome;
+
+      const emptyList = await requestJson(server.base, trashListUrl());
+      check(
+        'empty trash responds with zero totals',
+        emptyList.status === 200 && emptyList.json && emptyList.json.ok === true && emptyList.json.batches.length === 0 && emptyList.json.totals.batches === 0 && emptyList.json.totals.files === 0 && emptyList.json.totals.bytes === 0,
+        emptyList.json,
+      );
+      check('trash list reports the default retention config', Boolean(emptyList.json.config) && emptyList.json.config.trashRetentionDays === 0, emptyList.json.config);
+
+      const badScope = await requestJson(server.base, trashListUrl('&scope=everything'));
+      check('bad trash scope is 400 bad-scope', badScope.status === 400 && badScope.json.code === 'bad-scope', badScope.status);
+
+      const trashDelete = await requestJson(server.base, `${ROUTE_PREFIX}/delete`, { method: 'POST', body: { sessionId: trSessionId, scope: 'all' } });
+      const movedPaths = Array.isArray(trashDelete.json && trashDelete.json.deleted) ? trashDelete.json.deleted : [];
+      check('trash fixture delete moved the probe file', trashDelete.status === 200 && movedPaths.includes(probeRel), movedPaths);
+      check('trash fixture delete removed the workspace copy', !existsSync(join(trWorkspace, probeRel)));
+
+      const listed = await requestJson(server.base, trashListUrl());
+      const listedBatches = Array.isArray(listed.json.batches) ? listed.json.batches : [];
+      const batch = listedBatches.find((item) => item.ownerSessionId === trSessionId);
+      check('trash list shows the new batch', listed.status === 200 && listedBatches.length === 1 && Boolean(batch), listed.json);
+      check(
+        'batch carries id, owner and createdAt',
+        Boolean(batch) && batch.id === `${trSessionId}/${batch.createdAt}` && Number.isFinite(batch.createdAt) && batch.createdAt > 0,
+        batch && batch.id,
+      );
+      check('batch reports whole-batch files and bytes', Boolean(batch) && batch.files === 1 && batch.bytes === probeBytes, batch && { files: batch.files, bytes: batch.bytes });
+      check(
+        'batch entries list the relative path and size',
+        Boolean(batch) && batch.entries.length === 1 && batch.entries[0].path === probeRel && batch.entries[0].size === probeBytes && batch.truncated === false,
+        batch && batch.entries,
+      );
+      check(
+        'batch totals aggregate the listing',
+        listed.json.totals.batches === 1 && listed.json.totals.files === 1 && listed.json.totals.bytes === probeBytes,
+        listed.json.totals,
+      );
+      if (!batch) throw new Error('trash batch missing; aborting the trash section');
+
+      // A manually planted batch under another session owner proves scope filtering.
+      const foreignId = `session-${randomUUID()}`;
+      const foreignBatchName = String(Date.now() - 1000);
+      const foreignBatchId = `${foreignId}/${foreignBatchName}`;
+      mkdirSync(join(trashBase, foreignId, foreignBatchName), { recursive: true });
+      writeFileSync(join(trashBase, foreignId, foreignBatchName, 'foreign.bin'), 'zz');
+      const allList = await requestJson(server.base, trashListUrl());
+      const scopedList = await requestJson(server.base, trashListUrl('&scope=session'));
+      check('scope all includes every owner', allList.json.totals.batches === 2 && allList.json.totals.files === 2 && allList.json.totals.bytes === probeBytes + 2, allList.json.totals);
+      check(
+        'scope session only lists this session',
+        scopedList.status === 200 && scopedList.json.batches.length === 1 && scopedList.json.batches[0].ownerSessionId === trSessionId && scopedList.json.totals.batches === 1,
+        scopedList.json.totals,
+      );
+
+      const batchDir = join(trashBase, trSessionId, String(batch.createdAt));
+      const restored = await requestJson(server.base, `${ROUTE_PREFIX}/trash/restore`, { method: 'POST', body: { sessionId: trSessionId, batch: batch.id } });
+      check('restore responds 200 and copies the batch back', restored.status === 200 && restored.json.ok === true && restored.json.restored.includes(probeRel), restored.json);
+      check(
+        'restore puts the file back into the workspace',
+        existsSync(join(trWorkspace, probeRel)) && readFileSync(join(trWorkspace, probeRel), 'utf8') === probeText,
+      );
+      check('restore returns a rebuilt ledger', Boolean(restored.json.ledger) && restored.json.ledger.sessionId === trSessionId && Array.isArray(restored.json.ledger.nodes));
+      check('restore keeps the trash copy (copy, not move)', existsSync(join(batchDir, probeRel)));
+
+      const restoreAgain = await requestJson(server.base, `${ROUTE_PREFIX}/trash/restore`, { method: 'POST', body: { sessionId: trSessionId, batch: batch.id } });
+      check(
+        'restore never overwrites an existing file',
+        restoreAgain.status === 200 && restoreAgain.json.restored.length === 0 && restoreAgain.json.skipped.some((item) => item.path === probeRel && item.reason === 'exists'),
+        restoreAgain.json.skipped,
+      );
+      const restoreMissing = await requestJson(server.base, `${ROUTE_PREFIX}/trash/restore`, {
+        method: 'POST',
+        body: { sessionId: trSessionId, batch: batch.id, paths: ['not_in_batch.py'] },
+      });
+      check(
+        'restore reports missing batch entries',
+        restoreMissing.status === 200 && restoreMissing.json.skipped.some((item) => item.path === 'not_in_batch.py' && item.reason === 'missing'),
+        restoreMissing.json.skipped,
+      );
+      const restoreBadPath = await requestJson(server.base, `${ROUTE_PREFIX}/trash/restore`, {
+        method: 'POST',
+        body: { sessionId: trSessionId, batch: batch.id, paths: ['../escape.txt'] },
+      });
+      check(
+        'restore reports unsafe paths as bad-path',
+        restoreBadPath.status === 200 && restoreBadPath.json.skipped.some((item) => item.reason === 'bad-path'),
+        restoreBadPath.json.skipped,
+      );
+      const missingBatch = await requestJson(server.base, `${ROUTE_PREFIX}/trash/restore`, { method: 'POST', body: { sessionId: trSessionId, batch: `${trSessionId}/1` } });
+      check('unknown batch is 404 batch-not-found', missingBatch.status === 404 && missingBatch.json.code === 'batch-not-found', missingBatch.status);
+      const badBatch = await requestJson(server.base, `${ROUTE_PREFIX}/trash/restore`, { method: 'POST', body: { sessionId: trSessionId, batch: 'not-a-batch' } });
+      check('malformed batch id is 400 bad-batch', badBatch.status === 400 && badBatch.json.code === 'bad-batch', badBatch.status);
+
+      const emptyNeedsScope = await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId } });
+      check('empty without scope is 400 empty-scope-required', emptyNeedsScope.status === 400 && emptyNeedsScope.json.code === 'empty-scope-required', emptyNeedsScope.status);
+      const zeroDays = await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId, olderThanDays: 0 } });
+      check('olderThanDays 0 is rejected', zeroDays.status === 400 && zeroDays.json.code === 'empty-scope-required', zeroDays.status);
+      const dryEmpty = await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId, batch: batch.id, dryRun: true } });
+      check(
+        'empty dryRun reports the batch without deleting it',
+        dryEmpty.status === 200 && dryEmpty.json.dryRun === true && dryEmpty.json.removed.length === 1 && dryEmpty.json.removed[0].batch === batch.id && dryEmpty.json.removed[0].files === 1 && dryEmpty.json.totals.files === 1 && existsSync(join(batchDir, probeRel)),
+        dryEmpty.json,
+      );
+      const realEmpty = await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId, batch: batch.id } });
+      check(
+        'empty really deletes the batch directory',
+        realEmpty.status === 200 && realEmpty.json.removed.length === 1 && realEmpty.json.totals.files === 1 && realEmpty.json.totals.bytes === probeBytes && !existsSync(batchDir),
+        realEmpty.json,
+      );
+      const afterEmpty = await requestJson(server.base, trashListUrl());
+      check('empty leaves only the foreign batch listed', afterEmpty.json.batches.length === 1 && afterEmpty.json.batches[0].ownerSessionId === foreignId, afterEmpty.json.totals);
+      const foreignEmpty = await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId, batch: foreignBatchId } });
+      check("empty by batch removes another session's batch", foreignEmpty.status === 200 && foreignEmpty.json.removed.length === 1 && !existsSync(join(trashBase, foreignId)), foreignEmpty.json);
+
+      // A fresh batch survives the olderThanDays filter.
+      await new Promise((done) => setTimeout(done, 10));
+      writeFileSync(join(trWorkspace, probeRel), probeText);
+      await requestJson(server.base, `${ROUTE_PREFIX}/delete`, { method: 'POST', body: { sessionId: trSessionId, scope: 'all' } });
+      const listedAgain = await requestJson(server.base, trashListUrl());
+      const freshBatch = listedAgain.json.batches.find((item) => item.ownerSessionId === trSessionId);
+      const freshBatchDir = freshBatch ? join(trashBase, trSessionId, String(freshBatch.createdAt)) : '';
+      check('second delete creates a fresh trash batch', Boolean(freshBatch) && freshBatch.files === 1, listedAgain.json.totals);
+      const keepFresh = await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId, olderThanDays: 1 } });
+      check(
+        'olderThanDays 1 keeps fresh batches',
+        keepFresh.status === 200 && keepFresh.json.removed.length === 0 && existsSync(freshBatchDir),
+        keepFresh.json,
+      );
+
+      const configUrl = `${ROUTE_PREFIX}/config`;
+      const badRetention = await requestJson(server.base, configUrl, { method: 'POST', body: { sessionId: trSessionId, trashRetentionDays: 5000 } });
+      check('config rejects retention above 3650', badRetention.status === 400 && badRetention.json.code === 'bad-retention', badRetention.status);
+      const fractional = await requestJson(server.base, configUrl, { method: 'POST', body: { sessionId: trSessionId, trashRetentionDays: 1.5 } });
+      check('config rejects non-integer retention', fractional.status === 400 && fractional.json.code === 'bad-retention', fractional.status);
+      const missingRetention = await requestJson(server.base, configUrl, { method: 'POST', body: { sessionId: trSessionId } });
+      check('config requires trashRetentionDays', missingRetention.status === 400 && missingRetention.json.code === 'bad-retention', missingRetention.status);
+      const savedConfig = await requestJson(server.base, configUrl, { method: 'POST', body: { sessionId: trSessionId, trashRetentionDays: 7 } });
+      check(
+        'config write responds 200 with the new setting',
+        savedConfig.status === 200 && savedConfig.json.config.trashRetentionDays === 7 && Array.isArray(savedConfig.json.swept) && savedConfig.json.totals.files === 0,
+        savedConfig.json,
+      );
+      const configPath = join(trHome, 'session-files', 'config.json');
+      check('config write persists config.json', existsSync(configPath) && JSON.parse(readFileSync(configPath, 'utf8')).trashRetentionDays === 7, existsSync(configPath) ? readFileSync(configPath, 'utf8') : 'missing');
+
+      // Age the fresh batch past the 7 day retention and let GET /trash sweep it.
+      const oldEpoch = String(Date.now() - 40 * 86_400_000);
+      if (freshBatch) renameSync(freshBatchDir, join(trashBase, trSessionId, oldEpoch));
+      const sweptList = await requestJson(server.base, trashListUrl());
+      check(
+        'GET /trash sweeps batches older than the configured retention',
+        sweptList.status === 200 && !sweptList.json.batches.some((item) => item.ownerSessionId === trSessionId) && !existsSync(join(trashBase, trSessionId, oldEpoch)),
+        sweptList.json.totals,
+      );
+
+      // Retention 0 disables sweeping again.
+      await new Promise((done) => setTimeout(done, 10));
+      writeFileSync(join(trWorkspace, probeRel), probeText);
+      await requestJson(server.base, `${ROUTE_PREFIX}/delete`, { method: 'POST', body: { sessionId: trSessionId, scope: 'all' } });
+      const thirdList = await requestJson(server.base, trashListUrl());
+      const thirdBatch = thirdList.json.batches.find((item) => item.ownerSessionId === trSessionId);
+      const thirdOld = String(Date.now() - 40 * 86_400_000);
+      if (thirdBatch) renameSync(join(trashBase, trSessionId, String(thirdBatch.createdAt)), join(trashBase, trSessionId, thirdOld));
+      const offConfig = await requestJson(server.base, configUrl, { method: 'POST', body: { sessionId: trSessionId, trashRetentionDays: 0 } });
+      check('config 0 disables retention', offConfig.status === 200 && offConfig.json.config.trashRetentionDays === 0 && offConfig.json.swept.length === 0, offConfig.json);
+      const stillThere = await requestJson(server.base, trashListUrl());
+      check('retention 0 keeps old batches', stillThere.status === 200 && stillThere.json.batches.some((item) => item.ownerSessionId === trSessionId), stillThere.json.totals);
+      const cleanupBatch = stillThere.json.batches.find((item) => item.ownerSessionId === trSessionId);
+      if (cleanupBatch) await requestJson(server.base, `${ROUTE_PREFIX}/trash/empty`, { method: 'POST', body: { sessionId: trSessionId, batch: cleanupBatch.id } });
+      check('trash fixture cleanup removed its session directory', !existsSync(join(trashBase, trSessionId)));
+
+      // apply() sweeps expired trash when the plugin loads (contract section 10).
+      const applyHome = mkdtempSync(join(tmpdir(), 'dsh-sf-applyhome-'));
+      const applyStateDir = join(applyHome, 'session-files');
+      const applyBatchDir = join(applyStateDir, 'trash', trSessionId, String(Date.now() - 40 * 86_400_000));
+      try {
+        mkdirSync(applyBatchDir, { recursive: true });
+        writeFileSync(join(applyBatchDir, 'expired.bin'), 'old');
+        writeFileSync(join(applyStateDir, 'config.json'), JSON.stringify({ version: 1, trashRetentionDays: 3 }));
+        process.env.DSH_HOME = applyHome;
+        const unmountSweep = mountPlugin([]);
+        try {
+          const sweptOnApply = await waitFor(() => !existsSync(applyBatchDir));
+          check('apply() sweeps expired trash batches on plugin load', sweptOnApply);
+        } finally {
+          unmountSweep();
+        }
+      } finally {
+        process.env.DSH_HOME = trHome;
+        rmSync(applyHome, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(trHome, { recursive: true, force: true });
+      rmSync(trWorkspace, { recursive: true, force: true });
     }
   } finally {
     process.env.DSH_HOME = originalHome;

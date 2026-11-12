@@ -977,6 +977,13 @@ async function settle(times) {
 function installFetchStub(getLedger, options) {
   const opts = options || {};
   const calls = [];
+  function readBody(init) {
+    try {
+      return init && init.body ? JSON.parse(init.body) : {};
+    } catch (error) {
+      return {};
+    }
+  }
   globalThis.fetch = function (url, init) {
     calls.push({ url: String(url), init: init || {}, method: (init && init.method) || 'GET' });
     const ledger = getLedger();
@@ -1009,6 +1016,39 @@ function installFetchStub(getLedger, options) {
           ledger: ledger,
         };
       }
+    } else if (String(url).indexOf('/api/session-files/trash/restore') === 0) {
+      const payload = readBody(init);
+      if (typeof opts.onRestore === 'function') opts.onRestore(payload);
+      body = {
+        ok: true,
+        restored: typeof opts.restored === 'function' ? opts.restored(payload) : [],
+        skipped: typeof opts.restoreSkipped === 'function' ? opts.restoreSkipped(payload) : [],
+        ledger: typeof opts.restoreLedger === 'function' ? opts.restoreLedger(payload) : ledger,
+      };
+    } else if (String(url).indexOf('/api/session-files/trash/empty') === 0) {
+      const payload = readBody(init);
+      if (typeof opts.onEmpty === 'function') opts.onEmpty(payload);
+      body = {
+        ok: true,
+        removed: typeof opts.removed === 'function' ? opts.removed(payload) : [],
+        totals: typeof opts.emptyTotals === 'function' ? opts.emptyTotals(payload) : { files: 0, bytes: 0 },
+      };
+    } else if (String(url).indexOf('/api/session-files/config') === 0) {
+      const payload = readBody(init);
+      if (typeof opts.onConfig === 'function') opts.onConfig(payload);
+      body = {
+        ok: true,
+        config: typeof opts.config === 'function' ? opts.config(payload) : { trashRetentionDays: payload.trashRetentionDays },
+        swept: typeof opts.swept === 'function' ? opts.swept(payload) : [],
+        totals: { files: 0, bytes: 0 },
+      };
+    } else if (String(url).indexOf('/api/session-files/trash') === 0) {
+      body = {
+        ok: true,
+        config: { trashRetentionDays: typeof opts.trashConfig === 'function' ? opts.trashConfig() : 0 },
+        batches: typeof opts.trashBatches === 'function' ? opts.trashBatches() : [],
+        totals: typeof opts.trashTotals === 'function' ? opts.trashTotals() : { batches: 0, files: 0, bytes: 0 },
+      };
     } else {
       body = { ok: false, code: 'unexpected-url' };
     }
@@ -1045,6 +1085,34 @@ try {
   // What the fake host reports for a dry-run / real delete (v2 two-step cleanup).
   let dryDeleted = [];
   let deleteSkipped = [];
+
+  // --- v4 (0.1.4): trash (CONTRACT §6 /trash, /config) ---------------------
+  // State the fake host serves for GET /trash and the mutating endpoints.
+  let trashBatches = [];
+  let trashTotals = { batches: 0, files: 0, bytes: 0 };
+  let trashConfig = 0;
+  let restoredPaths = [];
+  let restoreSkippedPaths = [];
+  let restoreLedgerValue = null;
+  let removedBatches = [];
+  let removedTotals = { files: 0, bytes: 0 };
+  let configWrites = [];
+
+  const restoredNode = Object.assign({}, MOCK.nodes[0], {
+    id: 'restored-note.md#t2',
+    path: 'restored-note.md',
+    name: 'restored-note.md',
+    ext: 'md',
+    dir: '',
+    size: 640,
+    mtime: 1762400200000,
+    birthtime: 1762400200000,
+  });
+  const RESTORED_LEDGER = Object.assign({}, MOCK, {
+    nodes: MOCK.nodes.concat([restoredNode]),
+    counts: Object.assign({}, MOCK.counts, { files: MOCK.counts.files + 1 }),
+  });
+
   const calls = installFetchStub(
     function () {
       return currentLedger;
@@ -1058,6 +1126,53 @@ try {
       },
       skipped: function () {
         return deleteSkipped.slice();
+      },
+      trashBatches: function () {
+        return trashBatches.slice();
+      },
+      trashTotals: function () {
+        return trashTotals;
+      },
+      trashConfig: function () {
+        return trashConfig;
+      },
+      restored: function (payload) {
+        if (Array.isArray(payload.paths) && payload.paths.length > 0) return payload.paths.slice();
+        return restoredPaths.slice();
+      },
+      restoreSkipped: function () {
+        return restoreSkippedPaths.slice();
+      },
+      restoreLedger: function () {
+        return restoreLedgerValue || currentLedger;
+      },
+      onRestore: function (payload) {
+        // The real host keeps the batch (restore is a copy) — nothing to mutate.
+        if (payload && payload.batch && typeof payload.batch !== 'string') throw new Error('batch must be a string');
+      },
+      removed: function () {
+        return removedBatches.slice();
+      },
+      emptyTotals: function () {
+        return removedTotals;
+      },
+      onEmpty: function (payload) {
+        // The deleted batch disappears from the next GET /trash.
+        trashBatches = trashBatches.filter(function (batch) {
+          return batch.id !== payload.batch;
+        });
+        trashTotals = {
+          batches: trashBatches.length,
+          files: trashBatches.reduce(function (sum, batch) { return sum + batch.files; }, 0),
+          bytes: trashBatches.reduce(function (sum, batch) { return sum + batch.bytes; }, 0),
+        };
+      },
+      onConfig: function (payload) {
+        configWrites.push(payload);
+        trashConfig = payload.trashRetentionDays;
+      },
+      config: function (payload) {
+        return { trashRetentionDays: payload.trashRetentionDays };
       },
     },
   );
@@ -1426,6 +1541,322 @@ try {
       eq(body.scope, 'all', 'empty-state cleanup scope');
       eq(body.paths, undefined, 'empty-state cleanup must not send paths in the dry run');
     });
+    // --- v4 (0.1.4): trash panel -----------------------------------------
+    const TRASH_TIME = 1762400000000;
+    const TRASH_A = {
+      id: MOCK.sessionId + '/' + TRASH_TIME,
+      ownerSessionId: MOCK.sessionId,
+      createdAt: TRASH_TIME,
+      files: 2,
+      bytes: 2048,
+      entries: [
+        { path: 'dbg/a.py', size: 1024 },
+        { path: 'dbg/b.py', size: 1024 },
+      ],
+      truncated: false,
+    };
+    const TRASH_B = {
+      id: 'other-session-xyz/1762400100000',
+      ownerSessionId: 'other-session-xyz',
+      createdAt: TRASH_TIME + 100000,
+      files: 1,
+      bytes: 512,
+      entries: [{ path: 'old.log', size: 512 }],
+      truncated: true,
+    };
+    trashBatches = [TRASH_A, TRASH_B];
+    trashTotals = { batches: 2, files: 3, bytes: 2560 };
+    trashConfig = 0;
+    restoreLedgerValue = null;
+
+    const trashButtonNode = function () {
+      return findAll(renderer.tree(), function (node) {
+        return node.host && node.type === 'button' && hasClass(node, 'sf-trash-btn');
+      })[0];
+    };
+    const trashDrawerNode = function () {
+      return findAll(renderer.tree(), function (node) {
+        return node.host && hasClass(node, 'sf-trash-drawer');
+      })[0];
+    };
+    const headerRefreshNode = function () {
+      const headerBox = findAll(renderer.tree(), function (node) {
+        return node.host && hasClass(node, 'sf-header');
+      })[0];
+      if (!headerBox) return null;
+      return findAll(headerBox, function (node) {
+        return node.host && node.type === 'button' && textOf(node).trim() === '刷新';
+      })[0];
+    };
+    const viaText = function (root, text) {
+      return findAll(root, function (node) {
+        return node.host && node.type === 'button' && textOf(node).trim() === text;
+      })[0];
+    };
+
+    // Back from the empty-tree state to the full mock tree.
+    currentLedger = MOCK;
+    const refreshBeforeTrash = headerRefreshNode();
+    ok(refreshBeforeTrash, 'header refresh missing before the trash checks');
+    refreshBeforeTrash.props.onClick({});
+    await settle(20);
+
+    const trashButton = trashButtonNode();
+    ok(trashButton, 'trash button missing from the header');
+    eq(trashButton.props.title, '回收站', 'trash button title');
+    eq(textOf(trashButton), '回收站', 'trash button label');
+    eq(trashButton.props['aria-pressed'], 'false', 'trash button starts unpressed');
+    trashButton.props.onClick({});
+    await settle(20);
+
+    check('render: trash button opens the panel and lists batches', function () {
+      const drawer = trashDrawerNode();
+      ok(drawer, 'trash drawer missing');
+      eq(findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-overlay'); }).length, 1, 'still exactly one overlay');
+      const pressed = trashButtonNode();
+      ok(pressed, 'trash button disappeared');
+      eq(pressed.props['aria-pressed'], 'true', 'trash button must be pressed while open');
+      ok(hasClass(pressed, 'on'), 'trash button must be highlighted while open');
+      const trashCalls = calls.filter(function (call) {
+        return call.url.indexOf('/api/session-files/trash?') === 0;
+      });
+      eq(trashCalls.length, 1, 'one trash request on open');
+      eq(fetchUrlParam(trashCalls[0].url, 'scope'), 'all', 'trash scope');
+      eq(fetchUrlParam(trashCalls[0].url, 'sessionId'), MOCK.sessionId, 'trash sessionId');
+      const copy = textOf(drawer);
+      ok(copy.indexOf('自动清理') >= 0, 'retention label missing: ' + copy);
+      ok(copy.indexOf('关闭（不自动删除）') >= 0, 'retention off option missing');
+      ok(copy.indexOf('2 个文件 · 2 KB') >= 0, 'batch A size line missing: ' + copy);
+      ok(copy.indexOf('1 个文件 · 512 B') >= 0, 'batch B size line missing');
+      ok(copy.indexOf('other-se') >= 0, 'owner session short id missing');
+      ok(copy.indexOf('共 2 个批次 · 3 个文件 · 2.5 KB') >= 0, 'totals footer missing: ' + copy);
+      const select = findAll(drawer, function (node) { return node.host && node.type === 'select'; })[0];
+      ok(select, 'retention select missing');
+      eq(select.props.value, '0', 'retention select starts at off');
+      const options = findAll(select, function (node) { return node.host && node.type === 'option'; }).map(textOf);
+      eq(options.length, 4, 'retention presets');
+      ok(options.indexOf('关闭（不自动删除）') >= 0 && options.indexOf('30 天') >= 0, 'retention option labels: ' + options.join('|'));
+      eq(findAll(drawer, function (node) { return node.host && hasClass(node, 'sf-entry'); }).length, 0, 'entries stay collapsed');
+    });
+
+    const batchCards = findAll(renderer.tree(), function (node) {
+      return node.host && hasClass(node, 'sf-batch');
+    });
+    eq(batchCards.length, 2, 'two batch cards');
+    const expandA = findAll(batchCards[0], function (node) {
+      return node.host && node.type === 'button' && node.props && node.props['aria-expanded'] !== undefined;
+    })[0];
+    ok(expandA, 'batch A expand toggle missing');
+    expandA.props.onClick({});
+    await settle(10);
+    const batchCardsExpanded = findAll(renderer.tree(), function (node) {
+      return node.host && hasClass(node, 'sf-batch');
+    });
+    const expandB = findAll(batchCardsExpanded[1], function (node) {
+      return node.host && node.type === 'button' && node.props && node.props['aria-expanded'] !== undefined;
+    })[0];
+    ok(expandB, 'batch B expand toggle missing');
+    expandB.props.onClick({});
+    await settle(10);
+
+    check('render: expanding a batch shows its entries and the truncation marker', function () {
+      const drawer = trashDrawerNode();
+      ok(drawer, 'trash drawer missing after expand');
+      eq(findAll(drawer, function (node) { return node.host && hasClass(node, 'sf-entry'); }).length, 3, 'entry rows');
+      const copy = textOf(drawer);
+      ok(copy.indexOf('dbg/a.py') >= 0 && copy.indexOf('dbg/b.py') >= 0 && copy.indexOf('old.log') >= 0, 'entry paths missing: ' + copy);
+      const more = findAll(drawer, function (node) { return node.host && hasClass(node, 'sf-entry-more'); });
+      eq(more.length, 1, 'truncated batch must show a more marker');
+      ok(textOf(more[0]).indexOf('…') >= 0, 'truncation marker copy');
+      eq(findAll(drawer, function (node) {
+        return node.host && node.type === 'button' && textOf(node).trim() === '恢复';
+      }).length, 3, 'per-entry restore buttons');
+    });
+
+    // Restore a single entry: the host copies just that path back.
+    const restoreOneButton = findAll(trashDrawerNode(), function (node) {
+      return node.host && node.type === 'button' && textOf(node).trim() === '恢复';
+    })[0];
+    ok(restoreOneButton, 'per-entry restore button missing');
+    restoreOneButton.props.onClick({});
+    await settle(25);
+
+    check('render: restoring one entry posts its path and says how many files came back', function () {
+      const restoreCalls = calls.filter(function (call) {
+        return call.url.indexOf('/api/session-files/trash/restore') === 0;
+      });
+      eq(restoreCalls.length, 1, 'one restore request');
+      const body = JSON.parse(restoreCalls[0].init.body);
+      eq(body.sessionId, MOCK.sessionId, 'restore sessionId');
+      eq(body.batch, TRASH_A.id, 'restore batch id must round-trip verbatim');
+      eq(body.paths.length, 1, 'a per-entry restore sends exactly one path');
+      eq(body.paths[0], 'dbg/a.py', 'restored path');
+      const toast = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-toast'); })[0];
+      ok(toast, 'restore toast missing');
+      ok(textOf(toast).indexOf('已恢复 1 个文件') >= 0, 'restore toast copy: ' + textOf(toast));
+      const trashCalls = calls.filter(function (call) {
+        return call.url.indexOf('/api/session-files/trash?') === 0;
+      });
+      ok(trashCalls.length >= 2, 'the batch list must refresh after a restore');
+    });
+
+    // Restore the whole batch: the response ledger replaces the tree.
+    restoredPaths = ['dbg/a.py', 'dbg/b.py'];
+    restoreSkippedPaths = [{ path: 'dbg/c.py', reason: 'exists' }];
+    restoreLedgerValue = RESTORED_LEDGER;
+    const restoreBatchButton = findAll(trashDrawerNode(), function (node) {
+      return node.host && node.type === 'button' && textOf(node).trim() === '恢复整批';
+    })[0];
+    ok(restoreBatchButton, 'restore-batch button missing');
+    restoreBatchButton.props.onClick({});
+    await settle(30);
+
+    check('render: restoring a whole batch replaces the tree and reports skipped copies', function () {
+      const restoreCalls = calls.filter(function (call) {
+        return call.url.indexOf('/api/session-files/trash/restore') === 0;
+      });
+      const body = JSON.parse(restoreCalls[restoreCalls.length - 1].init.body);
+      eq(body.batch, TRASH_A.id, 'whole-batch restore batch id');
+      eq(body.paths, undefined, 'whole-batch restore must not restrict paths');
+      const restoredCard = findAll(renderer.tree(), function (node) {
+        return node.host && hasClass(node, 'sf-node') && textOf(node).indexOf('restored-note.md') >= 0;
+      });
+      eq(restoredCard.length, 1, 'the response ledger must replace the panel tree');
+      const toast = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-toast'); })[0];
+      ok(toast, 'restore toast missing');
+      const copy = textOf(toast);
+      ok(copy.indexOf('已恢复 2 个文件') >= 0, 'restored count missing: ' + copy);
+      ok(copy.indexOf('跳过 1 个') >= 0, 'skipped count missing: ' + copy);
+    });
+
+    // Auto-clean dropdown: confirm, POST /config, toast, reload.
+    const confirmBeforeRetention = confirmCalls.length;
+    const select30 = findAll(trashDrawerNode(), function (node) { return node.host && node.type === 'select'; })[0];
+    ok(select30, 'retention select missing after restore');
+    select30.props.onChange({ target: { value: '30' } });
+    await settle(25);
+
+    check('render: the retention dropdown confirms and writes /config', function () {
+      eq(confirmCalls.length, confirmBeforeRetention + 1, 'one confirmation for 30 days');
+      const copy = String(confirmCalls[confirmCalls.length - 1]);
+      ok(copy.indexOf('超过 30 天') >= 0, 'retention confirm copy: ' + copy);
+      eq(configWrites.length, 1, 'one /config write');
+      eq(configWrites[0].sessionId, MOCK.sessionId, 'config sessionId');
+      eq(configWrites[0].trashRetentionDays, 30, 'config days');
+      const toast = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-toast'); })[0];
+      ok(toast && textOf(toast).indexOf('自动清理：30 天') >= 0, 'retention toast missing');
+      const select = findAll(trashDrawerNode(), function (node) { return node.host && node.type === 'select'; })[0];
+      eq(select.props.value, '30', 'the select must show the saved value');
+    });
+
+    const confirmBeforeOff = confirmCalls.length;
+    const selectOff = findAll(trashDrawerNode(), function (node) { return node.host && node.type === 'select'; })[0];
+    selectOff.props.onChange({ target: { value: '0' } });
+    await settle(25);
+
+    check('render: turning auto-clean off needs no confirmation', function () {
+      eq(confirmCalls.length, confirmBeforeOff, 'off must not confirm');
+      eq(configWrites.length, 2, 'second /config write');
+      eq(configWrites[1].trashRetentionDays, 0, 'config off');
+      const toast = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-toast'); })[0];
+      ok(toast && textOf(toast).indexOf('关闭（不自动删除）') >= 0, 'off toast missing: ' + (toast ? textOf(toast) : 'none'));
+      const select = findAll(trashDrawerNode(), function (node) { return node.host && node.type === 'select'; })[0];
+      eq(select.props.value, '0', 'the select must show the saved value');
+    });
+
+    // Delete one batch: confirm -> /trash/empty -> toast -> refreshed list.
+    removedBatches = [{ batch: TRASH_B.id, files: 1, bytes: 512 }];
+    removedTotals = { files: 1, bytes: 512 };
+    const drawerForEmpty = trashDrawerNode();
+    const cardsForEmpty = findAll(drawerForEmpty, function (node) {
+      return node.host && hasClass(node, 'sf-batch');
+    });
+    const cardB = cardsForEmpty.filter(function (card) { return textOf(card).indexOf('other-se') >= 0; })[0];
+    ok(cardB, 'batch B card missing');
+    const emptyButtonB = viaText(cardB, '删除整批');
+    ok(emptyButtonB, 'delete-batch button missing');
+    const confirmBeforeEmpty = confirmCalls.length;
+    emptyButtonB.props.onClick({});
+    await settle(30);
+
+    check('render: deleting a batch confirms, empties it and refreshes the list', function () {
+      eq(confirmCalls.length, confirmBeforeEmpty + 1, 'one confirmation for the batch');
+      const copy = String(confirmCalls[confirmCalls.length - 1]);
+      ok(copy.indexOf('将永久删除 1 个文件') >= 0, 'empty confirm copy: ' + copy);
+      const emptyCalls = calls.filter(function (call) {
+        return call.url.indexOf('/api/session-files/trash/empty') === 0;
+      });
+      eq(emptyCalls.length, 1, 'one /trash/empty call');
+      const body = JSON.parse(emptyCalls[0].init.body);
+      eq(body.sessionId, MOCK.sessionId, 'empty sessionId');
+      eq(body.batch, TRASH_B.id, 'empty batch id');
+      eq(body.olderThanDays, undefined, 'batch delete must not send olderThanDays');
+      const toast = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-toast'); })[0];
+      ok(toast, 'empty toast missing');
+      ok(textOf(toast).indexOf('已永久删除 1 个文件（释放 512 B）') >= 0, 'empty toast copy: ' + textOf(toast));
+      const copyAfter = textOf(trashDrawerNode());
+      ok(copyAfter.indexOf('other-se') < 0, 'deleted batch must disappear from the list');
+      ok(copyAfter.indexOf('共 1 个批次 · 2 个文件 · 2 KB') >= 0, 'totals must follow the refreshed list: ' + copyAfter);
+    });
+
+    // Empty trash -> the empty state, and its refresh button.
+    trashBatches = [];
+    trashTotals = { batches: 0, files: 0, bytes: 0 };
+    const refreshInTrash = viaText(trashDrawerNode(), '刷新');
+    ok(refreshInTrash, 'trash refresh button missing');
+    refreshInTrash.props.onClick({});
+    await settle(25);
+
+    check('render: an empty trash shows the empty state', function () {
+      const drawer = trashDrawerNode();
+      ok(drawer, 'trash drawer missing');
+      eq(findAll(drawer, function (node) { return node.host && hasClass(node, 'sf-batch'); }).length, 0, 'no batch cards in an empty trash');
+      const status = findAll(drawer, function (node) { return node.host && hasClass(node, 'sf-status'); })[0];
+      ok(status, 'trash empty state missing');
+      ok(textOf(status).indexOf('回收站是空的') >= 0, 'empty copy: ' + textOf(status));
+    });
+
+    // Esc layering: trash panel -> detail drawer -> overlay.
+    currentLedger = MOCK;
+    const refreshForEsc = headerRefreshNode();
+    ok(refreshForEsc, 'header refresh missing for the Esc checks');
+    refreshForEsc.props.onClick({});
+    await settle(20);
+    const nodeForDrawer = findAll(renderer.tree(), function (node) {
+      return node.host && hasClass(node, 'sf-node');
+    })[0];
+    ok(nodeForDrawer, 'node card missing for the Esc checks');
+    nodeForDrawer.props.onClick({ stopPropagation() {} });
+    await settle(10);
+
+    const drawersBeforeEsc = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-drawer'); }).length;
+    dispatchKey('Escape', 27);
+    await settle(10);
+
+    check('render: Esc closes the trash panel before the detail drawer', function () {
+      eq(drawersBeforeEsc, 2, 'trash + detail drawers before Esc');
+      eq(trashDrawerNode(), undefined, 'trash panel must close first');
+      const detail = findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-drawer'); });
+      eq(detail.length, 1, 'detail drawer must stay open');
+      const button = trashButtonNode();
+      ok(button && button.props['aria-pressed'] === 'false', 'trash button must be un-pressed after Esc');
+    });
+
+    dispatchKey('Escape', 27);
+    await settle(10);
+
+    check('render: Esc then closes the detail drawer', function () {
+      eq(findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-drawer'); }).length, 0, 'detail drawer closed');
+      eq(findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-overlay'); }).length, 1, 'overlay still open');
+    });
+
+    dispatchKey('Escape', 27);
+    await settle(10);
+
+    check('render: the last Esc closes the overlay and the store', function () {
+      eq(findAll(renderer.tree(), function (node) { return node.host && hasClass(node, 'sf-overlay'); }).length, 0, 'overlay closed');
+      eq(renderApi.__test.getOpenSnapshot().open, false, 'store closed');
+    });
     await settle();
   })().catch(function (error) {
     fail += 1;
@@ -1448,6 +1879,42 @@ function fetchUrlParam(url, name) {
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// trash payload normalisation (pure)
+// ---------------------------------------------------------------------------
+
+check('trash: normalizeTrash coerces host payloads and drops unusable batches', function () {
+  const out = L.normalizeTrash({
+    ok: true,
+    config: { trashRetentionDays: '30' },
+    batches: [
+      {
+        id: 'sess/1',
+        ownerSessionId: 'sess',
+        createdAt: '1762400000000',
+        files: '2',
+        bytes: 100,
+        entries: [{ path: 'a', size: 1 }, { path: 'b', size: 'x' }, { nothing: true }],
+        truncated: 1,
+      },
+      null,
+      { ownerSessionId: 'no-id' },
+    ],
+    totals: {},
+  });
+  eq(out.config.trashRetentionDays, 30, 'config coercion');
+  eq(out.batches.length, 1, 'only usable batches survive');
+  eq(out.batches[0].id, 'sess/1', 'batch id');
+  eq(out.batches[0].createdAt, 1762400000000, 'createdAt coercion');
+  eq(out.batches[0].files, 2, 'files coercion');
+  eq(out.batches[0].entries.length, 2, 'entries without a path are dropped');
+  eq(out.batches[0].entries[1].path, 'b', 'entry order preserved');
+  eq(out.batches[0].entries[1].size, 0, 'bad size clamps to 0');
+  eq(out.batches[0].truncated, false, 'truncated must be a real boolean');
+  eq(out.totals.batches, 1, 'totals fall back to the batch list');
+  eq(L.TRASH_RETENTIONS.join(','), '0,7,30,90', 'retention presets');
+});
 
 // ---------------------------------------------------------------------------
 // summary

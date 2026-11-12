@@ -26,6 +26,8 @@ This plugin collapses those into **one tree, four lanes, one recoverable cleanup
 - **Click a card**: drawer with a text/binary preview, lane override and free-form note.
 - **"N more not shown" chip**: the tree only draws files the session actually touched; scanned-but-untouched historical junk is listed in a popover — exactly what "clean up every temp file" has to cover.
 - **Two-step cleanup**: `dryRun` first to get an authoritative count, confirm, then move into `$DSH_HOME/session-files/trash/<session>/<timestamp>/` — never a hard delete.
+- **Trash panel**: every cleanup batch (session + timestamp), its files and size; restore a whole batch or a single file (copy, never overwrite), or empty a batch after a confirm.
+- **Optional auto-clean**: retention off / 7 / 30 / 90 days, swept at startup, when the trash is opened and when the setting is saved. Off by default — nothing is ever hard-deleted without you asking.
 - **Agent tool** `session_files` (`list` / `classify` / `cleanup`) plus a 4-line system-prompt section, so the agent tidies up after itself.
 - Theme-token colors only (`--dsw-alias-*`), light and dark friendly.
 
@@ -43,7 +45,7 @@ Success looks like: a `[session-files]` prompt section, a `session_files` tool, 
 
 ## Usage in one screen
 
-Open the tree from the composer button. Read columns as turns and rows as lanes. Click a card to preview, reclassify or annotate. Press "cleanup" to move every `temp` path to the trash after a dry run. Let the agent do the same through the `session_files` tool. Details and the HTTP contract: [docs/USAGE.md](docs/USAGE.md). Contributing and release process: [docs/MAINTAINING.md](docs/MAINTAINING.md).
+Open the tree from the composer button. Read columns as turns and rows as lanes. Click a card to preview, reclassify or annotate. Press "cleanup" to move every `temp` path to the trash after a dry run. The header's trash button lists what is recoverable there and holds the retention setting. Let the agent do the same through the `session_files` tool. Details and the HTTP contract: [docs/USAGE.md](docs/USAGE.md). Contributing and release process: [docs/MAINTAINING.md](docs/MAINTAINING.md).
 
 ## Known limitations
 
